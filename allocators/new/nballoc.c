@@ -44,10 +44,14 @@ static void add_node_after(node *n, node *target) {
 static void remove_node(node *n) {
 	node *prev;
 	retry_1:
-	prev = n->prev->prev;
+	prev = n->prev;//->prev; // BUG: two steps backwards fuck everything up
 	// ^ one backwards step supports a non-TSX insert and a TSX remove on adjacent elements, two backwards steps support a non-TSX remove and a TSX remove on adjacent elements
-	while (prev->next != n) // TODO: can this cause infinite looping?
+
+	while (prev->next != n) {// TODO: can this cause infinite looping?
+		
+		if (prev == NULL) printf("\nBruh moment\n");
 		prev = prev->next;
+	}
 	if (!bCAS(&prev->next, n, n->next)) goto retry_1;
 
 	retry_2:
@@ -397,7 +401,7 @@ void* bd_xx_malloc(size_t size) {
 	return _alloc(size);
 }
 
-node *try_coalescing(node *n) {
+static node *try_coalescing(node *n) {
 	mark_node(n, OCC, INV);
 
 	for ( ; ; ) {
@@ -406,8 +410,11 @@ node *try_coalescing(node *n) {
 		node *buddy = &nodes[buddy_index];
 		
 		retry:
-		if (buddy->status != FREE || buddy->order != n->order)
+		if (buddy->status != FREE || buddy->order != n->order) {
+			if (buddy->next != NULL && buddy->prev == NULL && buddy->status != OCC)
+				printf("buddy of %p is fucked! %p {next = %p, prev = %p, status = %u}\n", n, buddy, buddy->next, buddy->prev, buddy->status);
 			break; // buddy is either in use, in the stack, or it's been fragmented
+		}
 		
 		// printf("\tBuddy free at order %u\n", buddy->order);
 		if (!mark_node(buddy, FREE, INV))
@@ -432,7 +439,10 @@ static void _free(void *addr) {
 	unsigned long index = ((unsigned char *)addr - memory) / PAGE_SIZE;
 	node *n = &nodes[index];
 
-	// TODO: check if the stack has space (e.g. <= THRESHOLD / 2 nodes?) and push there
+	if (zones[n->cpu].heads[n->order].stack.len <= (STACK_THRESH / 2)) {
+		stack_push(&zones[n->cpu].heads[n->order].stack, n);
+		return;
+	}
 
 	#ifdef TSX
 	unsigned ok = TRY_TRANSACTION({
@@ -493,6 +503,21 @@ void bd_xx_free(void* addr) {
 	_free(addr);
 }
 
+void _debug_test_nodes() {
+	printf("Checking if all nodes are ok...\n");
+
+	for (unsigned long i = 0; i < TOTAL_NODES; i++) {
+		node *n = &nodes[i];
+
+		if (n->status == FREE && !IN_LIST(n)) {
+			printf("node: %p { status = %u, order = %u, cpu = %u, next = %p, prev = %p}", 
+				n, n->status, n->order, n->cpu, n->next, n->prev);
+		}
+	}
+
+	printf("Done!\n");
+}
+
 #ifdef TEST_MAIN
 int main(int argc, char const *argv[]) {
 	unsigned long expected_blocks = nodes_per_cpu >> MAX_ORDER;
@@ -529,7 +554,7 @@ int main(int argc, char const *argv[]) {
 
 	// Try some stack ops
 	do { // just to collapse the block in the editor
-		printf("Trying some stack operations\n");
+		printf("\nTrying some stack operations\n");
 
 		node *n = zones[0].heads[MAX_ORDER].next;
 		remove_node(n);

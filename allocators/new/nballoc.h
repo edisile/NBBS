@@ -4,7 +4,6 @@
 
 	#include <stddef.h>
 
-	//#define PAGE_SIZE 4096ULL
 	#define CACHE_LINE_SIZE 64ULL
 	#define MAX_ORDER 10ULL
 
@@ -13,11 +12,15 @@
 	#endif
 
 	#ifndef MAX_ALLOCABLE_BYTES
-		#define MAX_ALLOCABLE_BYTES (PAGE_SIZE * 1024ULL)
+		#define MAX_ALLOCABLE_BYTES (PAGE_SIZE << MAX_ORDER)
 	#endif
 
 	#ifndef NUM_LEVELS
 		#define NUM_LEVELS 16ULL
+	#endif
+	
+	#ifndef STACK_THRESH
+		#define STACK_THRESH 16ULL // Determines the laziness of the buddy system
 	#endif
 
 	// Number of nodes, one per page
@@ -74,5 +77,7 @@
 	// Exposed APIs for memory allocation
 	void *bd_xx_malloc(size_t size);
 	void bd_xx_free(void* addr);
+
+	void _debug_test_nodes();
 
 #endif
