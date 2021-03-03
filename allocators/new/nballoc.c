@@ -3,9 +3,10 @@
 #include <unistd.h>
 #include <pthread.h>
 
-#include "nballoc.h"
-#include "gcc_wrappers.h"
 #include "../../utils/utils.h"
+#include "gcc_wrappers.h"
+#include "nballoc.h"
+#include "structs.h"
 
 #ifdef TSX
 	// Support for Intel TSX instructions
@@ -20,6 +21,7 @@ static cpu_zone *zones = NULL; // a list of arrays of nodes, each one being a li
 static node *nodes = NULL; // a list of all nodes, one for each page
 // TODO: find a way to get rid of this
 static pthread_mutex_t *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
+
 // =============================================================================
 // List ops
 // =============================================================================
@@ -150,7 +152,6 @@ static void setup_memory_state() {
 
 // Initialize the structure of the buddy system
 __attribute__ ((constructor)) void premain() {
-	printf("Initializing\n");
 	// Get the number of CPUs configured on the system; there might be some 
 	// CPUs that are configured but not available (e.g. shut down to save power)
 	ALL_CPUS = sysconf(_SC_NPROCESSORS_CONF);
@@ -206,6 +207,16 @@ __attribute__ ((constructor)) void premain() {
 // =============================================================================
 
 #define mark_node(n, old_status, new_status) (bCAS(&n->status, old_status, new_status))
+
+static inline int mark_ptr(node **ptr_addr) {
+	return bCAS(ptr_addr, (unsigned long) *ptr_addr & PTR_MASK, 
+		(unsigned long) *ptr_addr | DEL_MARK);
+}
+
+static inline int unmark_ptr(node **ptr_addr) {
+	return bCAS(ptr_addr, (unsigned long) *ptr_addr | DEL_MARK, 
+		(unsigned long) *ptr_addr & PTR_MASK);
+}
 
 static inline unsigned long cpu_id() {
 	unsigned long id;

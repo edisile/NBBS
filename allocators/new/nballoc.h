@@ -7,6 +7,10 @@
 	#define CACHE_LINE_SIZE 64ULL
 	#define MAX_ORDER 10ULL
 
+	#ifndef PAGE_SIZE
+		#define PAGE_SIZE 4096ULL
+	#endif
+
 	#ifndef MIN_ALLOCABLE_BYTES
 		#define MIN_ALLOCABLE_BYTES PAGE_SIZE
 	#endif
@@ -33,46 +37,6 @@
 
 	#define MIN(x,y) (x < y ? x : y)
 	#define MAX(x,y) (x > y ? x : y)
-
-
-
-	// Possible states a memory block could assume:
-	enum states {
-		HEAD = -1, // node is the head of a list, doesn't represent a page
-		FREE = 0, // memory block is free
-		INV, // node is invalid, block is actually part of a bigger FREE block
-		OCC // memory block is in use
-	};
-
-	typedef struct _stack {
-		struct _node *head;
-		unsigned long len;
-	} stack;
-
-	/*
-	// A more compact stack that doesn't use 128 bit CAS
-	typedef struct _stack {
-		union {
-			struct _node *head;
-			unsigned long len;
-		};
-	} stack;
-	*/
-
-	typedef struct __attribute__((aligned(CACHE_LINE_SIZE))) _node {
-		struct _node *prev;
-		struct _node *next;
-		struct _stack stack;
-		
-		enum states status;
-		unsigned short cpu;
-		unsigned short order;
-	} node;
-
-	typedef struct _cpu_zone {
-		node heads[MAX_ORDER + 1];
-	} cpu_zone;
-
 
 	// Exposed APIs for memory allocation
 	void *bd_xx_malloc(size_t size);
