@@ -82,7 +82,7 @@ static void stack_push(stack *s, node *n) {
 
 static node *stack_pop(stack *s) {
 	retry:
-	if (s->len == 0) return NULL;
+	if (s->head == NULL) return NULL;
 	
 	node *head = s->head;
 	stack new_stack = {

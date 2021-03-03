@@ -16,10 +16,10 @@ do
 		do
 			for threads in $THREAD_list
 			do
-				EX1="time -f Real:%e,User:%U,Sys:%S,PCPU:%P,PFAULT:%F,MEM:%K ./benchmarks/TB_linux-scalability/TB_linux-scalability-$alloc $threads $size 			"
-				EX2="time -f Real:%e,User:%U,Sys:%S,PCPU:%P,PFAULT:%F,MEM:%K ./benchmarks/TB_threadtest/TB_threadtest-$alloc $threads $size 						"
-				EX4="time -f Real:%e,User:%U,Sys:%S,PCPU:%P,PFAULT:%F,MEM:%K ./benchmarks/TB_fixed-size/TB_fixed-size-$alloc $threads $size" # `echo $((size*16))`"
-				EX5="time -f Real:%e,User:%U,Sys:%S,PCPU:%P,PFAULT:%F,MEM:%K ./benchmarks/TB_cached_allocation/TB_cached_allocation-$alloc $threads $size"
+				EX1="/usr/bin/time -f Real:%e,User:%U,Sys:%S,PCPU:%P,PFAULT:%F,MEM:%K ../benchmarks/TB_linux-scalability/TB_linux-scalability-$alloc $threads $size 			"
+				EX2="/usr/bin/time -f Real:%e,User:%U,Sys:%S,PCPU:%P,PFAULT:%F,MEM:%K ../benchmarks/TB_threadtest/TB_threadtest-$alloc $threads $size 						"
+				EX4="/usr/bin/time -f Real:%e,User:%U,Sys:%S,PCPU:%P,PFAULT:%F,MEM:%K ../benchmarks/TB_fixed-size/TB_fixed-size-$alloc $threads $size" # `echo $((size*16))`"
+				EX5="/usr/bin/time -f Real:%e,User:%U,Sys:%S,PCPU:%P,PFAULT:%F,MEM:%K ../benchmarks/TB_cached_allocation/TB_cached_allocation-$alloc $threads $size"
 				OUT1="${FOLDER}/TBLS-$alloc-sz$size-TH$threads-R$run"; touch $OUT1
 				OUT2="${FOLDER}/TBTT-$alloc-sz$size-TH$threads-R$run"; touch $OUT2
 				OUT4="${FOLDER}/TBFS-$alloc-sz$size-TH$threads-R$run"; touch $OUT4

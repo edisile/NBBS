@@ -12,10 +12,11 @@ all:
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+	rm system.conf
 
 init:
 	$(eval SYS_TABLE=$(shell sudo cat /proc/kallsyms  | grep "sys_call_table" | head -n1 | cut -f1 -d' '))
-	$(eval NI_SYSCALL=$(shell sudo cat /proc/kallsyms  | grep " sys_ni_syscall" | cut -f1 -d' '))
+	$(eval NI_SYSCALL=$(shell sudo cat /proc/kallsyms  | grep -w "__x64_sys_ni_syscall" | cut -f1 -d' '))
 	@echo SYS_TABLE=$(SYS_TABLE)
 	@echo NI_SYSCALL=$(NI_SYSCALL)
 	$(shell echo SYS_TABLE=0x$(SYS_TABLE) > system.conf)
