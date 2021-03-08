@@ -5,13 +5,15 @@
 
 #include "nballoc.h"
 
-#define THREADS 64
-#define ROUNDS 1048576
+#define THREADS 4
+#define ROUNDS (1024*1024)
+#define HISTORY 64
 
 pthread_barrier_t barrier;
 
 void *thread_job(void *arg) {
 	unsigned long id = (unsigned long) arg;
+	void *values[HISTORY];
 
 	// printf("%d is waiting\n", arg);
 	pthread_barrier_wait(&barrier);
@@ -20,15 +22,21 @@ void *thread_job(void *arg) {
 	for (int i = 0; i < ROUNDS; i++) {
 		// printf("%d is allocating\n", arg);
 		void *addr = bd_xx_malloc(1000);
+		values[i % HISTORY] = addr;
+
+		// printf("%d got %p\n", id, addr);
+		// pthread_barrier_wait(&barrier); // BUG: when this is enabled all goes well, the problem is between concurrent allocs and releases
+		// usleep(100000);
 
 		if (addr == NULL) {
 			printf("%d got a big fat NULL\n", arg);
 		} else {
 			bd_xx_free(addr);
+			// printf("%d is deallocating %p\n", arg, addr);
 		}
 		// usleep(100);
-		// printf("%d is deallocating %p\n", arg, addr);
 	}
+	printf("%d is done\n", arg);
 
 	return NULL;
 }
