@@ -31,13 +31,13 @@
 	} stack;
 
 	typedef struct __attribute__((aligned(CACHE_LINE_SIZE))) _node {
-		struct _node *prev;
-		struct _node *next;
-		union _stack stack;
+		struct _node *prev; // 8B
+		struct _node *next; // 8B
+		union _stack stack; // 8B
 		
-		enum states status;
-		unsigned short cpu;
-		unsigned short order;
+		enum states status; // 4B
+		unsigned short order; // 2B
+		unsigned short cpu; // 2B
 	} node;
 
 	typedef struct _cpu_zone {

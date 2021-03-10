@@ -25,7 +25,7 @@ void *thread_job(void *arg) {
 		values[i % HISTORY] = addr;
 
 		// printf("%d got %p\n", id, addr);
-		// pthread_barrier_wait(&barrier); // BUG: when this is enabled all goes well, the problem is between concurrent allocs and releases
+		// pthread_barrier_wait(&barrier);
 		// usleep(100000);
 
 		if (addr == NULL) {

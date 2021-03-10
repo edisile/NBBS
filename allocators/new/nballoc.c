@@ -46,7 +46,7 @@ static void add_node_after(node *n, node *target) {
 
 	if (!bCAS(&n->next, NULLN, MARKED(NEXT(target))))
 		goto retry_1;
-	// n->next = (node *) MARKED(NEXT(target)); // BUG: this could allow a node to be inserted in list and stack
+	
 	n->prev = target;
 	// the n->next pointer is marked to prevent deletion until insertion ends
 	
@@ -83,6 +83,7 @@ static void remove_node(node *n) {
 	if (NEXT(prev) != n){
 		// there's been an insertion in front of n
 		// TODO: add an assert, this should never happen while removing the node
+		// unless it's done in a transaction (?)
 		if (!unmark_ptr(&n->next))
 			goto retry_1;
 
@@ -332,7 +333,6 @@ static node *get_free_node(size_t order) {
 
 	cpus_visited = 1;
 	n = NEXT(n);
-	// TODO: assert n->next == NEXT(n); this is always true for list heads
 
 	for ( ; ; ) {
 		// this might happen if a thread sleeps holding a reference to a node that is removed before the thread wakes up again
@@ -364,11 +364,9 @@ static node *get_free_node(size_t order) {
 			case OCC:
 				// attempt to cleanup
 				next_node = NEXT(n);
-
-				// make sure the transaction didn't fail because of someone that released the node
+				
 				// FIXME: this uses locks atm, not very poggers
-				if (0) { // TODO: enable again
-				// if (pthread_mutex_trylock(&locks[n->cpu]) == 0) {
+				if (pthread_mutex_trylock(&locks[n->cpu]) == 0) {
 					if (n->status != FREE && IN_LIST(n)) {
 						remove_node(n);
 					}
@@ -421,21 +419,41 @@ static node *get_free_node(size_t order) {
 }
 
 static void split_node(node *n, size_t target_order) {
+	unsigned long n_index = n - nodes;
+
+	unsigned long x = n->order;
+	while (x != target_order) {
+		x--;
+		unsigned long buddy_index = n_index + (0x1 << x);
+		node *buddy = &nodes[buddy_index];
+
+		if (buddy->status != INV || !NOT_IN_LIST(buddy))
+			printf("This is fucked for some reason %p\n", buddy);
+	}
+
 	while (n->order != target_order) {
 		// split node in half, insert the second half to the correct place
 		n->order--;
-		node *buddy = n + (0x1 << n->order);
+		unsigned long buddy_index = n_index + (0x1 << n->order);
+		node *buddy = &nodes[buddy_index];
 		buddy->order = n->order;
 		buddy->cpu = n->cpu;
 
+		if (buddy->status != INV || !NOT_IN_LIST(buddy))
+			printf("This is fucked %p\n", buddy);
+
 		// FIXME: this uses locks atm, not very poggers
 		if (pthread_mutex_trylock(&locks[buddy->cpu]) == 0) {
-			while (!mark_node(buddy, INV, FREE)); // atomic CAS on n->status
+			while (!mark_node(buddy, INV, FREE)) {
+				printf("This should never fail? %p\n", n);
+			}
 			// printf("\tbuddy: %p { status = %u, order = %u, cpu = %u}\n", buddy, buddy->status, buddy->order, buddy->cpu);
 			add_node_after(buddy, &zones[buddy->cpu].heads[buddy->order]);
 			pthread_mutex_unlock(&locks[buddy->cpu]);
 		} else {
-			while (!mark_node(buddy, INV, OCC)); // atomic CAS on n->status
+			while (!mark_node(buddy, INV, OCC)) {
+				printf("This should never fail? %p\n", n);
+			}
 			// printf("\tbuddy: %p { status = %u, order = %u, cpu = %u}\n", buddy, buddy->status, buddy->order, buddy->cpu);
 			stack_push(&zones[buddy->cpu].heads[buddy->order].stack, buddy); // atomic CAS on stack head
 		}
@@ -507,7 +525,6 @@ static node *try_coalescing(node *n) {
 		printf("no way, n->status: %d\n", n->status);
 	}
 
-	// BUG: yep, this leads to pushing nodes straight into the fucking stack
 	for ( ; ; ) {
 		unsigned long n_index = n - nodes;
 		unsigned long buddy_index = n_index ^ (0x1 << n->order);
@@ -518,6 +535,8 @@ static node *try_coalescing(node *n) {
 			if (buddy->status == HEAD) {
 				printf("How the fuck did you get a head?\n\tnode: %p, buddy: %p\n", 
 					n, buddy);
+			} else if (buddy->status == INV) {
+				printf("Buddy status: %u, buddy order: %u\n", buddy->status, buddy->order);
 			}
 
 			break; // buddy is either in use, in the stack, or it's been fragmented
@@ -526,6 +545,20 @@ static node *try_coalescing(node *n) {
 		// printf("\tBuddy free at order %u\n", buddy->order);
 		if (!mark_node(buddy, FREE, INV))
 			goto retry; // someone might have allocated buddy concurrently
+		
+		// BUG: if the buddy is split and then freed while the current thread 
+		// is between retry and mark_node call this happens:
+		if (buddy->order != n->order) {
+			printf("Buddy status: %u, buddy order: %u\n", buddy->status, buddy->order);
+
+			// FIXME: this is just horrible but it works, a different mark_node that uses a CAS on both status and order would be far better
+			buddy->status = OCC;
+			node *buddy = try_coalescing(buddy);
+
+			if (buddy->order != n->order)
+				break;
+		}
+
 		remove_node(buddy);
 		
 		n = &nodes[MIN(n_index, buddy_index)];
@@ -535,7 +568,6 @@ static node *try_coalescing(node *n) {
 	}
 	
 	while (!mark_node(n, INV, FREE)) {
-		// BUG: sometimes n->status becomes OCC at this point 
 		printf("Aight, it failed, n->status: %d\n", n->status);
 	}
 	
@@ -565,7 +597,7 @@ static void _free(void *addr) {
 			remove_node(n);
 		}
 		
-		n = try_coalescing(n); // TODO: enable this
+		n = try_coalescing(n);
 		add_node_after(n, &zones[n->cpu].heads[n->order]);
 		if (n->status == FREE) {
 		}
