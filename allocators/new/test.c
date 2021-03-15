@@ -14,6 +14,7 @@ pthread_barrier_t barrier;
 void *thread_job(void *arg) {
 	unsigned long id = (unsigned long) arg;
 	void *values[HISTORY];
+	unsigned long tid = gettid();
 
 	// printf("%d is waiting\n", arg);
 	pthread_barrier_wait(&barrier);

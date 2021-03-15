@@ -1,7 +1,10 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <assert.h>
+#include <string.h>
 
 #include "../../utils/utils.h"
 #include "gcc_wrappers.h"
@@ -17,139 +20,201 @@
 static unsigned long ALL_CPUS; // number of (configured) CPUs on the system
 static unsigned long nodes_per_cpu;
 static unsigned char *memory = NULL; // pointer to the memory managed by the buddy system
-static cpu_zone *zones = NULL; // a list of arrays of nodes, each one being a list head
+static cpu_zone *zones = NULL; // a list of arrays of heads and stacks
 static node *nodes = NULL; // a list of all nodes, one for each page
 // FIXME: find a way to get rid of this
 static pthread_mutex_t *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
+
+#define INDEX(n_ptr) (n_ptr - nodes)
+#define BUDDY_INDEX(idx, order) (idx ^ (0x1 << order))
+#define BUDDY(n_ptr) ((node *) ((unsigned long) n_ptr) ^ (0x1 << (6 + n_ptr->order)))
+#define OWNER(n_ptr) (INDEX(n_ptr) / nodes_per_cpu)
 
 // =============================================================================
 // List ops
 // =============================================================================
 
-static void add_node_after(node *n, node *target) {
-	// TODO: it's assumed that target can't be a node that can be removed from 
-	// the list, so target probably should be calculated in this function based 
-	// on the value of n->cpu and n->order
-	retry_1:
-	if (!NOT_IN_LIST(n) || n->stack.len > 0) {
-		return;
-	}
-
-	if (NEXT(target) == NULLN) {
-		printf("BRUH how\n");
-	}
-
-	if (n->status != FREE) {
-		printf("adding node that's not free?\n");
-		return;
-	}
-
-	if (!bCAS(&n->next, NULLN, MARKED(NEXT(target))))
-		goto retry_1;
-	
-	n->prev = target;
-	// the n->next pointer is marked to prevent deletion until insertion ends
-	
-	if (!bCAS(&target->next, NEXT(n), n)) {
-		n->next = NULLN;
-		goto retry_1;
-	}
-	// can a node be removed at this point while it's being added? nope
-	// n->next was marked before it was visible in the list so it would be 
-	// impossible to remove it
-	
-	retry_2:
-	if (!bCAS(&(NEXT(n)->prev), target, n))
-		goto retry_2;
-
-	retry_release:
-	if (!unmark_ptr(&n->next))
-		goto retry_release;
-	// insertion is done, anyone can remove the node from the list now
+static void debug(unsigned long p) {
+	printf("pack: %p\n", p);
+	printf("next : %p ", UNPACK_NEXT(p));
+	printf("state: %p ", UNPACK_STATE(p));
+	printf("order: %p ", UNPACK_ORDER(p));
+	printf("reach: %p\n", UNPACK_REACH(p));
 }
 
-static void remove_node(node *n) {
-	// first try to mark n->next, if it's marked already leave and return false
-	retry_acquire:
-	if (IS_MARKED(n->next) || n->next == NULLN)
-		return; // someone else is removing or has removed the node
+static int insert_node(node *n) {
+	retry_acquire:;
+	unsigned cpu = OWNER(n);
+	node *target = &zones[cpu].heads[n->order];
+
+	assert(target->state == HEAD && target->reach == LIST && 
+		n->order == target->order);
+
+	unsigned long old = GET_PACK(n);
+	if (UNPACK_REACH(old) != UNLINK || UNPACK_STATE(old) != FREE) {
+		debug(old);
+		return 0;
+	}
 	
-	if (!mark_ptr(&n->next))
+	unsigned long new = MAKE_PACK_NODE(NEXT(target), UNPACK_ORDER(old), 
+			UNPACK_STATE(old), BUSY);
+
+	if (!set_pack_node(n, old, new))
+		goto retry_acquire;
+	
+	// FIXME: 
+	n->prev = target;
+	
+	old = MAKE_PACK_NODE(NEXT(n), n->order, HEAD, LIST);
+	new = MAKE_PACK_NODE(n, n->order, HEAD, LIST);
+	
+	if (!set_pack_node(target, old, new)) {
+		n->next = PACK_NEXT(NULLN);
+		if (n->state != FREE) {
+			printf("Oh hello\n");
+		}
+		n->state = FREE;
+		n->reach = UNLINK;
+		goto retry_acquire;
+	}
+
+	// can a node be removed at this point while it's being added? nope
+	// n->reach was set as BUSY before n was visible in the list so it would be 
+	// impossible to remove it
+	
+	retry_prev:
+	if (!bCAS(&(NEXT(n)->prev), target, n))
+		goto retry_prev;
+
+	retry_release:
+	old = GET_PACK(n);
+	new = MAKE_PACK_NODE(NEXT(n), UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
+
+	// MAYBE: could this be done in a lazier way? e.g. just n->reach = LIST
+	if (!set_pack_node(n, old, new))
+		goto retry_release;
+	// insertion is done, anyone can remove the node from the list now
+
+	return 1;
+}
+
+static int remove_node(node *n) {
+	// first try to mark n->next, if it's marked already leave and return false
+	retry_acquire:;
+	unsigned long old = GET_PACK(n);
+	if (UNPACK_REACH(old) != LIST || UNPACK_STATE(old) == FREE)
+		return 0; // someone else is removing or has removed the node
+	
+	unsigned long new = MAKE_PACK_NODE(NEXT(n), UNPACK_ORDER(old), 
+			UNPACK_STATE(old), BUSY);
+
+	if (!set_pack_node(n, old, new))
 		goto retry_acquire;
 
 	retry_1: ;
 	node *prev = n->prev;
 	
-	if (NEXT(prev) != n){
-		// there's been an insertion in front of n
-		// TODO: add an assert, this should never happen while removing the node
-		// unless it's done in a transaction (?)
-		if (!unmark_ptr(&n->next))
-			goto retry_1;
+	// if (NEXT(prev) != n) {
+	// 	// there's been an insertion in front of n
+	// 	// TODO: add an assert, this should never happen while removing the node
+	// 	// unless it's done in a transaction (?)
+	// 	if (!unmark_ptr(&n->next))
+	// 		goto retry_1;
 
-		return;
-	}
+	// 	return;
+	// }
 
-	if (!bCAS(&prev->next, n, NEXT(n)))
+	old = MAKE_PACK_NODE(n, prev->order, prev->state, LIST);
+	new = MAKE_PACK_NODE(NEXT(n), prev->order, prev->state, LIST);
+
+	if (!set_pack_node(prev, old, new)) {
+		// debug(old); debug(new); printf("\n");
 		goto retry_1;
+	}
 
 	retry_2:
 	if (!bCAS(&NEXT(n)->prev, n, prev))
 		goto retry_2;
 
-	n->next = n->prev = NULLN;
+	retry_release: // MAYBE: does this have to be atomic?
+	old = GET_PACK(n);
+	if (UNPACK_REACH(old) != BUSY) {
+		printf("this shouldn't happen\n");
+	}
+	new = MAKE_PACK_NODE(NULLN, UNPACK_ORDER(old), UNPACK_STATE(old), UNLINK);
+	if (!set_pack_node(n, old, new))
+		goto retry_release;
+	n->prev = NULLN;
 	
-	mfence();
+	return 1;
 }
 
 // =============================================================================
 // Stack ops
 // =============================================================================
 
-static void stack_push(stack *s, node *n) {
-	retry:;
-	if (!NOT_IN_LIST(n)) {
-		// printf("pushing but n shouldn't be in the list: %p\n", n);
-		return;
+static void stack_init(stack *s) {
+	s->head = PACK_HEAD(NULLN);
+	s->aba = 0;
+}
+
+static int stack_push(stack *s, node *n) {
+	retry_acquire:;
+	unsigned long old = GET_PACK(n);
+	if (UNPACK_REACH(old) != UNLINK || UNPACK_STATE(old) != OCC) {
+		printf("Stack push failed:\n");
+		debug(old);
+		return 0;
 	}
 	
-	node *s_head = s->head;
-	if (!bCAS(&n->next, NULLN, UNMARKED(s_head)))
-		goto retry;
-	n->stack.len = n->next->stack.len + 1;
+	unsigned long new = MAKE_PACK_NODE(HEAD(s), UNPACK_ORDER(old), OCC, STACK);
+	if (!set_pack_node(n, old, new))
+		goto retry_acquire;
+
+	retry_push:;
+	unsigned long old_head = GET_PACK(s);
 	
-	if (n->status != OCC) {
-		printf("n should be OCC: %p\n", n);
+	n->next = PACK_NEXT(UNPACK_HEAD(old_head));
+	n->stack_len = LEN(s) + 1;
+	
+	unsigned long new_head = MAKE_PACK_STACK(s, n);
+	
+	if (!set_pack_stack(s, old_head, new_head)) {
+		// n->next = PACK_NEXT(NULLN);
+		// n->reach = UNLINK;
+		// n->prev = NULLN;
+		goto retry_push;
 	}
 
-	// make a pointer to n with the current stack epoch in the lower 6 bits
-	node *new_head = (node *) STACK_HEAD(n, s_head);
-
-	if (!bCAS(&s->head, s_head, new_head)) {
-		n->next = NULLN;
-		goto retry;
-	}
+	return 1;
 }
 
 static node *stack_pop(stack *s) {
 	retry:;
-	node *s_head = s->head;
-	node *n = (node *) UNMARKED(s_head);
+	unsigned long old = GET_PACK(s);
+	node *head = UNPACK_HEAD(old);
 
-	if (n == NULLN) return NULLN;
+	if (head == NULLN)
+		return NULLN;
 
-	if (IN_LIST(n))
-		goto retry; // a thread might sleep with an old reference
+	if (head->reach != STACK)
+		goto retry; // a thread might sleep with an old value
 
-	node *new_head = (node *) STACK_HEAD(n->next, s_head);
+	node *next = NEXT(head);
+	unsigned long new = MAKE_PACK_STACK(s, next);
 
-	if (!bCAS(&s->head, s_head, new_head)) goto retry;
+	if (!set_pack_stack(s, old, new)) {
+		goto retry;
+	}
 
-	n->stack.len = 0;
-	n->next = NULLN;
+	// clean head fields
+	head->next = PACK_NEXT(NULLN);
+	head->reach = UNLINK;
+	head->prev = NULLN;
+
 	mfence(); // is this necessary?
 
-	return n;
+	return head;
 }
 
 // TODO: rewrite this vvv
@@ -181,15 +246,16 @@ static node *stack_pop(stack *s) {
 static void setup_memory_blocks() {
 	for (unsigned long i = 0; i < TOTAL_NODES; i++) {
 		nodes[i] = (node) {
-			.next = NULLN,
+			.next = PACK_NEXT(NULLN),
 			.prev = NULLN,
-			.cpu = i / nodes_per_cpu,
-			.status = INV, // most nodes are invalid in the beginning
+			.state = INV,
+			.reach = UNLINK,
+			.order = 0,
 		};
 		
 		// Initially only MAX_ORDER-sized blocks are marked as available
 		if (i % (0x1 << MAX_ORDER) == 0) {
-			nodes[i].status = FREE;
+			nodes[i].state = FREE;
 			nodes[i].order = MAX_ORDER;
 		}
 	}
@@ -198,7 +264,7 @@ static void setup_memory_blocks() {
 
 	// insert the blocks in the buddy system
 	for (unsigned long i = 0; i < TOTAL_NODES; i += (0x1 << MAX_ORDER)) {
-		add_node_after(&nodes[i], &zones[nodes[i].cpu].heads[nodes[i].order]);
+		insert_node(&nodes[i]);
 	}
 }
 
@@ -239,6 +305,8 @@ __attribute__ ((constructor)) void premain() {
 
 	printf("\tallocations done\n");
 
+	memset(memory, 0, TOTAL_MEMORY);
+
 	// All the structures needed are allocated, time to initialize them
 
 	// First initialize and connect all the heads in the cpu_zones
@@ -248,14 +316,14 @@ __attribute__ ((constructor)) void premain() {
 		for (int j = 0; j <= MAX_ORDER; j++) {
 
 			zones[i].heads[j] = (node) {
-				.next = &zones[(i + 1) % ALL_CPUS].heads[j],
-				.prev = &zones[(i + ALL_CPUS - 1) % ALL_CPUS].heads[j],
-				.stack.head = NULLN,
-				.status = HEAD,
-				.cpu = i,
+				.next = PACK_NEXT(&zones[(i + 1) % ALL_CPUS].heads[j]),
 				.order = j,
+				.state = HEAD,
+				.reach = LIST,
+				.prev = &zones[(i + ALL_CPUS - 1) % ALL_CPUS].heads[j],
 			};
 
+			stack_init(&zones[i].stacks[j]);
 		}
 	}
 
@@ -268,10 +336,56 @@ __attribute__ ((constructor)) void premain() {
 }
 
 // =============================================================================
-// Implementation of the buddy system
+// Convenience functions
 // =============================================================================
 
-#define mark_node(n, old_status, new_status) (bCAS(&n->status, old_status, new_status))
+// #define mark_node(n, old_status, new_status) (bCAS(&n->state, old_status, new_status))
+
+static inline int change_state(node *n, short old_state, short new_state, 
+		short exp_reach, short exp_order) {
+	int ok = 0;
+	unsigned long old = GET_PACK(n);
+
+	if (UNPACK_STATE(old) != old_state || UNPACK_REACH(old) != exp_reach || 
+			UNPACK_ORDER(old) != exp_order) {
+		return 0;
+	}
+
+	unsigned long new = MAKE_PACK_NODE(UNPACK_NEXT(old), exp_order, new_state, 
+			exp_reach);
+
+	ok = set_pack_node(n, old, new);
+
+	if (ok) {
+		unsigned long new2 = GET_PACK(n);
+		if (old_state == FREE && UNPACK_STATE(new2) != UNPACK_STATE(new)) {
+			printf("H O W   T H E   F U C K\n");
+		}
+	}
+
+	return ok;
+}
+
+static inline int change_order(node *n, short old_order, short new_order, 
+		short exp_state, short exp_reach) {
+	
+	if (exp_reach == STACK || exp_state == HEAD) {
+		printf("This is wrong\n");
+		return 0;
+	}
+
+	unsigned long old = GET_PACK(n);
+
+	if (UNPACK_STATE(old) != exp_state || UNPACK_REACH(old) != exp_reach || 
+			UNPACK_ORDER(old) != old_order) {
+		return 0;
+	}
+
+	unsigned long new = MAKE_PACK_NODE(UNPACK_NEXT(old), new_order, exp_state, 
+			exp_reach);
+
+	return set_pack_node(n, old, new);
+}
 
 static inline unsigned long cpu_id() {
 	unsigned long id;
@@ -283,7 +397,7 @@ static inline unsigned long cpu_id() {
 	);
 
 	// id is not just the CPU core the thread is executed on, it's a value read 
-	// from a MSR managed by the OS; in Linux the value read is interpreted as 
+	// from a MSR managed by the OS; in Linux the value is interpreted as 
 	// (NUMA_NODE_ID << 12) | (CPU_ID)
 
 	return id % ALL_CPUS; // TODO: fix this ^
@@ -300,92 +414,138 @@ static inline size_t closest_order(size_t s) {
 // Allocation
 // =============================================================================
 
-// Navigate the list in search for a free node to allocate
-static node *get_free_node(size_t order) {
+// Try to allocate a FREE node, returns 1 if allocation succeeded and 0 
+// otherwise; if allocation fails *next_node_ptr is set to point to the next 
+// node to be examined
+static int handle_free_node(node *n, short order, node **next_node_ptr) {
+	short n_order = n->order;
+	node *next = NEXT(n);
+	int ok = 0;
+	
+	if (n_order >= order) {
+		// try to allocate the node
+		ok = change_state(n, FREE, OCC, LIST, n_order);
+		
+		if (ok) {
+			unsigned long *p = (unsigned long *)(memory + INDEX(n) * PAGE_SIZE);
+			unsigned long tid = gettid();
+			while (!bCAS(p, 0, tid))
+				printf("Fail\n");
+		}
+
+		if (!ok && n->state == FREE) {
+			// it failed but should try again
+			*next_node_ptr = n;
+		} else {
+			*next_node_ptr = next;
+		}
+
+	} else {
+		// n->order < order <= target_order means the node is in the wrong list
+		*next_node_ptr = next;
+		// move_node(n); // TODO: add move_node
+	}
+
+	return ok;
+}
+
+// Attempt to remove a node from the list, returns 1 if removal was successful 
+// or 0 otherwise; *next_node_ptr is set to point to the next node to visit
+static int handle_occ_node(node *n, node **next_node_ptr) {
+	node *next = NEXT(n);
+	int ok = 0;
+	
+	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
+		// FIXME: this uses locks atm, not very poggers
+		
+		ok = remove_node(n);
+		// remove_node fails if (n->state == FREE || n->reach != LIST)
+
+		pthread_mutex_unlock(&locks[OWNER(n)]);
+	}
+
+	// check if remove_node failed and/or there's been a concurrent free the 
+	// current thread should check this node again
+	if (!ok && n->state == FREE)
+		*next_node_ptr = n;
+	else
+		*next_node_ptr = next;
+
+	return ok;
+}
+
+// Navigate the list in search for a free node and allocate it; returns either 
+// a pointer to an actual node n with n->state == OCC or NULLN if no block that 
+// can satisfy the request is found
+static node *get_free_node(size_t order, short *origin) {
 	stack *s;
 	node *n, *popped, *next_node;
 	size_t target_order;
 	unsigned cpus_visited = 1;
+	
+	restart:;
+	unsigned cpu = cpu_id();
+	// TODO: ^ this is wrong with more that 1 NUMA node, see the comment in cpu_id
 
-	restart:
 	if (cpus_visited > ALL_CPUS + 1) {
 		printf("BRUH HOW\n");
 	}
 
 	target_order = order;
-	n = &zones[cpu_id()].heads[target_order];
-	// TODO: 	^ this is wrong with more that 1 NUMA node, see the comment in cpu_id
 
 	retry_stack:
-	s = &n->stack;
+	n = NEXT(&zones[cpu].heads[target_order]);
+	s = &zones[cpu].stacks[target_order];
 	popped = NULLN;
 
 	popped = stack_pop(s);
 	if (popped != NULLN) {
 		n = popped;
+		*origin = STACK;
 
-		if (n->status != OCC) {
+		unsigned long *p = (unsigned long *)(memory + INDEX(n) * PAGE_SIZE);
+		unsigned long tid = gettid();
+		while (!bCAS(p, 0, tid))
+			printf("Fail\n");
+
+		if (n->state != OCC) {
 			printf("node is not OCC %p\n", n);
+		}
+
+		if (n->reach != UNLINK || n->prev != NULLN || NEXT(n) != NULLN) {
+			printf("node is not unlinked %p\n", n);
 		}
 		
 		goto done;
 	}
 
 	cpus_visited = 1;
-	n = NEXT(n);
-
 	for ( ; ; ) {
-		// this might happen if a thread sleeps holding a reference to a node that is removed before the thread wakes up again
-		if (n == NULLN) {
+		// this might happen if a thread sleeps holding a reference to a node 
+		// that gets removed before the thread wakes up again
+		if (n->reach == UNLINK || n->reach == STACK) {
 			goto restart;
 		}
 
-		// TODO: clean this up a bit, there's too much indentation
-		switch (n->status) {
+		switch (n->state) {
 			case FREE:
-				if (n->order >= order) {
-					if (mark_node(n, FREE, OCC))
-						goto done; // CAS succeded, all is good
-				} else {
-					// n->order < order <= target_order means the node is in the wrong list
-					next_node = NEXT(n);
-					// move_node(n); // TODO: add move_node later
-					n = next_node;
+				if (handle_free_node(n, target_order, &next_node)) {
+					if (n->state != OCC)
+						printf("HOW TF\n");
+					
+					*origin = LIST;
+					goto done;
 				}
 				
-				break; // someone else marked this node concurrently
+				n = next_node;
+				break;
 			
 			case INV:
-				// just skip it, someone is coalescing the node and will remove it later
-				// it would be better to make this a coin flip o something?
 				n = NEXT(n);
 				break;
 			
 			case OCC:
-				// attempt to cleanup
-				next_node = NEXT(n);
-				
-				// FIXME: this uses locks atm, not very poggers
-				if (pthread_mutex_trylock(&locks[n->cpu]) == 0) {
-					if (n->status != FREE && IN_LIST(n)) {
-						remove_node(n);
-					}
-					pthread_mutex_unlock(&locks[n->cpu]);
-				
-					retry:
-					if (n->status == FREE) {
-						// node might have been released during the remove call, if it was try to acquire it
-						
-						if (!mark_node(n, FREE, OCC))
-							goto retry;
-						
-						if (n->order >= order)
-							goto done; // allocate this node
-						else
-							stack_push(&zones[n->cpu].heads[n->order].stack, n);
-					}
-				}
-
+				handle_occ_node(n, &next_node);
 				n = next_node;
 				break;
 			
@@ -394,7 +554,6 @@ static node *get_free_node(size_t order) {
 				if (cpus_visited > ALL_CPUS) {
 					target_order++;
 					if (target_order <= MAX_ORDER) {
-						n = &zones[cpu_id()].heads[target_order];
 						goto retry_stack;
 					} else {
 						// There's no memory to satisfy this allocation
@@ -407,67 +566,86 @@ static node *get_free_node(size_t order) {
 			
 			default:
 				fprintf(stderr, "There's a node with a wrong status value:\n\t%p: %p",
-					n, n->status);
+					n, n->state);
 				abort();
 		}
 
 	}
 
-	done:
+	done:;
 	// printf("Occupied node: %p\n", n);
 	return n;
 }
 
+// Repeatedly split n in half until it reaches target_order; the second half 
+// will be made valid and inserted in a list or a stack
 static void split_node(node *n, size_t target_order) {
-	unsigned long n_index = n - nodes;
+	size_t current_order = n->order;
+	unsigned long n_index = INDEX(n);
 
-	unsigned long x = n->order;
-	while (x != target_order) {
-		x--;
-		unsigned long buddy_index = n_index + (0x1 << x);
-		node *buddy = &nodes[buddy_index];
-
-		if (buddy->status != INV || !NOT_IN_LIST(buddy))
-			printf("This is fucked for some reason %p\n", buddy);
+	// First set the new order of n atomically
+	// TODO: this could be done when occupying the node in get_free_node saving 
+	// the trouble of doing two atomic CAS calls; give get_free_node another 
+	// argument a (size_t *) where the current order of the occupied node will 
+	// be put after the allocation
+	retry_set_order:;
+	if (n->state != OCC || n->reach == STACK) {
+		printf("This shouldn't happen...\n");
+		debug(GET_PACK(n));
 	}
 
-	while (n->order != target_order) {
-		// split node in half, insert the second half to the correct place
-		n->order--;
-		unsigned long buddy_index = n_index + (0x1 << n->order);
+	if (!change_order(n, current_order, target_order, OCC, n->reach))
+		goto retry_set_order;
+
+	size_t buddy_order = current_order;
+	while (buddy_order != target_order) {
+		buddy_order--;
+		// split n in half, validate its second half and insert it into the 
+		// correct list / stack
+		unsigned long buddy_index = BUDDY_INDEX(n_index, buddy_order);
 		node *buddy = &nodes[buddy_index];
-		buddy->order = n->order;
-		buddy->cpu = n->cpu;
-
-		if (buddy->status != INV || !NOT_IN_LIST(buddy))
-			printf("This is fucked %p\n", buddy);
-
-		// FIXME: this uses locks atm, not very poggers
-		if (pthread_mutex_trylock(&locks[buddy->cpu]) == 0) {
-			while (!mark_node(buddy, INV, FREE)) {
-				printf("This should never fail? %p\n", n);
-			}
-			// printf("\tbuddy: %p { status = %u, order = %u, cpu = %u}\n", buddy, buddy->status, buddy->order, buddy->cpu);
-			add_node_after(buddy, &zones[buddy->cpu].heads[buddy->order]);
-			pthread_mutex_unlock(&locks[buddy->cpu]);
-		} else {
-			while (!mark_node(buddy, INV, OCC)) {
-				printf("This should never fail? %p\n", n);
-			}
-			// printf("\tbuddy: %p { status = %u, order = %u, cpu = %u}\n", buddy, buddy->status, buddy->order, buddy->cpu);
-			stack_push(&zones[buddy->cpu].heads[buddy->order].stack, buddy); // atomic CAS on stack head
+		
+		retry_buddy:;
+		unsigned long old = GET_PACK(buddy);
+		if (UNPACK_REACH(old) != UNLINK || UNPACK_STATE(old) != INV) {
+			printf("This shouldn't happen...\n");
+			debug(old);
 		}
+		
+		int ok = 0;
+
+		if (pthread_mutex_trylock(&locks[OWNER(buddy)]) == 0) {
+			// FIXME: this uses locks atm, not very poggers
+			unsigned long new = MAKE_PACK_NODE(NULLN, buddy_order, 
+					FREE, UNLINK);
+			
+			ok = set_pack_node(buddy, old, new);
+			if (ok)
+				insert_node(buddy);
+			
+			pthread_mutex_unlock(&locks[OWNER(buddy)]);
+
+		} else {
+			
+			unsigned long new = MAKE_PACK_NODE(NULLN, buddy_order, 
+					OCC, UNLINK);
+
+			ok = set_pack_node(buddy, old, new);
+			if (ok)
+				stack_push(&zones[OWNER(buddy)].stacks[buddy_order], buddy);
+
+		}
+
+		if (!ok)
+			goto retry_buddy;
 	}
 }
 
 static void *_alloc(size_t size) {
 	size_t order = closest_order(size);
+	short node_origin = -1;
 
-	if (order > MAX_ORDER) {
-		return NULL;
-	}
-
-	node *n = get_free_node(order);
+	node *n = get_free_node(order, &node_origin);
 	if (n == NULLN) return NULL;
 
 	// check whether n is bigger than expected and needs to be fragmented
@@ -475,13 +653,13 @@ static void *_alloc(size_t size) {
 		split_node(n, order);
 	}
 	
-	// while the split was taking place someone might have removed n gaining us some time
-	if (NOT_IN_LIST(n)) goto done;
+	// while the split was taking place someone might have removed n gaining 
+	// this thread some time
+	if (n->reach == UNLINK) goto done;
 
 	#ifdef TSX
-	// first try removing the node transactionally; this is sub-optimal if we're on the correct CPU, but it protects against race conditions
-	ok = TRY_TRANSACTION({
-		if (IN_LIST(n)) {
+	int ok = TRY_TRANSACTION({
+		if (n->reach == LIST) {
 			// the node was taken from the list and is still there
 			remove_node(n)
 		}
@@ -490,29 +668,38 @@ static void *_alloc(size_t size) {
 	if (ok) goto done
 	#endif
 
-	if (n->status != OCC) {
-		printf("Wtf how is it not OCC? %p, %p\n", n, n->status);
+	unsigned long tid = *(unsigned long *)(memory + INDEX(n) * PAGE_SIZE);
+	if (gettid() != tid)
+		printf("%lu, %lu\n", gettid(), tid);
+
+	if (n->state != OCC) {
+		printf("Wtf how is it not OCC? %p, %p, %p\n", n, n->state, node_origin);
 	}
 
-	// fallback path, check if the node is owned by the current executing CPU; if it is disable preemption and remove it
-	// FIXME: this uses locks atm, not very poggers
-	if (pthread_mutex_trylock(&locks[n->cpu]) == 0) {
-		if (IN_LIST(n)) {
+	// fallback path, check if the node is owned by the current executing CPU; 
+	// if it is disable preemption and remove it
+	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
+		// FIXME: this uses locks atm, not very poggers
+		if (n->reach == LIST) {
 			// the node was taken from the list and is still there
 			remove_node(n);
 		}
-		pthread_mutex_unlock(&locks[n->cpu]);
+		pthread_mutex_unlock(&locks[OWNER(n)]);
 	} else {
-		// not a problem, when a thread on the correct CPU reaches this node it will try to remove it
+		// not a problem, when a thread on the correct CPU reaches this node 
+		// it will try to remove it
 	}
 
 	done:
 	// printf("\tbase memory address: %p\n", memory);
 	// printf("\tnode index %p, page address %p\n", n - nodes, memory + (n - nodes) * PAGE_SIZE);
-	return (void *)(memory + (n - nodes) * PAGE_SIZE);
+	return (void *) (memory + INDEX(n) * PAGE_SIZE);
 }
 
 void* bd_xx_malloc(size_t size) {
+	if ((size / PAGE_SIZE) > (0x1 << MAX_ORDER))
+		return NULL; // this size is bigger that what the buddy system supports
+
 	return _alloc(size);
 }
 
@@ -521,116 +708,96 @@ void* bd_xx_malloc(size_t size) {
 // =============================================================================
 
 static node *try_coalescing(node *n) {
-	while (!mark_node(n, OCC, INV)) {
-		printf("no way, n->status: %d\n", n->status);
-	}
+	retry1:;
+	short order = n->order;
 
-	for ( ; ; ) {
-		unsigned long n_index = n - nodes;
-		unsigned long buddy_index = n_index ^ (0x1 << n->order);
-		node *buddy = &nodes[buddy_index];
-		
-		retry:
-		if (buddy->status != FREE || buddy->order != n->order) {
-			if (buddy->status == HEAD) {
-				printf("How the fuck did you get a head?\n\tnode: %p, buddy: %p\n", 
-					n, buddy);
-			} else if (buddy->status == INV) {
-				printf("Buddy status: %u, buddy order: %u\n", buddy->status, buddy->order);
-			}
-
-			break; // buddy is either in use, in the stack, or it's been fragmented
-		}
-		
-		// printf("\tBuddy free at order %u\n", buddy->order);
-		if (!mark_node(buddy, FREE, INV))
-			goto retry; // someone might have allocated buddy concurrently
-		
-		// BUG: if the buddy is split and then freed while the current thread 
-		// is between retry and mark_node call this happens:
-		if (buddy->order != n->order) {
-			printf("Buddy status: %u, buddy order: %u\n", buddy->status, buddy->order);
-
-			// FIXME: this is just horrible but it works, a different mark_node that uses a CAS on both status and order would be far better
-			buddy->status = OCC;
-			node *buddy = try_coalescing(buddy);
-
-			if (buddy->order != n->order)
-				break;
-		}
-
-		remove_node(buddy);
-		
-		n = &nodes[MIN(n_index, buddy_index)];
-		n->order++;
-
-		if (n->order == MAX_ORDER) break;
-	}
+	if (!change_state(n, OCC, INV, UNLINK, order))
+		goto retry1;
 	
-	while (!mark_node(n, INV, FREE)) {
-		printf("Aight, it failed, n->status: %d\n", n->status);
-	}
-	
+	// TODO: rewrite
+
+	retry2:;
+	if (!change_state(n, INV, FREE, UNLINK, order))
+		goto retry2;
+
 	return n;
 }
 
 static void _free(void *addr) {
+	// TODO: remove
+	unsigned long *p = (unsigned long *) addr;
+	unsigned long tid = gettid();
+	while (!bCAS(p, tid, 0))
+		printf("%lu, %lu\n", gettid(), *p);
+	mfence();
+
 	unsigned long index = ((unsigned char *)addr - memory) / PAGE_SIZE;
 	node *n = &nodes[index];
+	stack *s = &zones[OWNER(n)].stacks[n->order];
 
-	if (n->status != OCC)
-		printf("wtf it's got to be OCC\n");
-	
-	if (n->stack.len != 0)
-		printf("why is it in the stack?\n");
+	if (n->state != OCC || n->reach == STACK) {
+		printf("wtf it's got to be OCC and not in the stack\n");
+		return;
+	}
 
-	// TODO: this causes problems, check later
-	// if (zones[n->cpu].heads[n->order].stack.len <= (STACK_THRESH / 2)) {
-	// 	stack_push(&zones[n->cpu].heads[n->order].stack, n);
+	// TODO: add later
+	// if (STACK_LEN(...) <= (STACK_THRESH / 2) && n->reach == UNLINK) {
+	// 	stack_push(s, n);
 	// 	return;
 	// }
 
-	// FIXME: this uses locks atm, not very poggers
-	if (pthread_mutex_trylock(&locks[n->cpu]) == 0) {
-		if (IN_LIST(n)) {
-			// in case a node allocated on another CPU but not removed gets freed on the correct CPU
-			remove_node(n);
+	
+	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
+		// FIXME: this uses locks atm
+
+		// BUG: this is where the problem is, I just don't get WHAT it is
+		if (n->reach == LIST) {
+			// node might not have been removed before being freed
+			int ok = remove_node(n);
+			if (!ok) {
+				printf("%p\n", n);
+			}
+			// debug(GET_PACK(n));
 		}
+
+		if (n->state != OCC)
+			printf("Nope\n");
 		
 		n = try_coalescing(n);
-		add_node_after(n, &zones[n->cpu].heads[n->order]);
-		if (n->status == FREE) {
-		}
-		pthread_mutex_unlock(&locks[n->cpu]);
+		insert_node(n);
+
+		pthread_mutex_unlock(&locks[OWNER(n)]);
 
 	} else {
-
-		unsigned node_freed = 0; // why is this needed? read below
-		if (IN_LIST(n)) {
-			// this node is still in the list as it wasn't removed, just mark as free
-			while(!mark_node(n, OCC, FREE)); // atomic CAS on n->status
-			node_freed = 1;
-		}
+		int ok = 0;
 		
-		retry:
-		if (NOT_IN_LIST(n)) {
-			
-			if (n->status == OCC && !node_freed) {
-				// this is the most likely path, n was removed from the list before this thread started the release
-				stack_push(&zones[n->cpu].heads[n->order].stack, n);
-			
-			} else if (n->status == FREE && node_freed) {
-				// there's a very unlikely situation that can happen and needs to be dealt with safely:
-				// another thread (B) is doing a get_free_node() and finds n in an OCC state; B removes n out of transaction just as this thread (A) was marking it as FREE
-				if (!mark_node(n, FREE, OCC)) // B and A now compete for the node, first one to mark is as OCC deals with it
-					goto retry;
-				stack_push(&zones[n->cpu].heads[n->order].stack, n);
-			} else {
-				unsigned long asd = 0;
+		while (ok == 0) {
+			switch (n->reach) {
+				case LIST:
+					// node is still in the list as it wasn't removed, just mark as free
+					ok = change_state(n, OCC, FREE, LIST, n->order);
+					break;
+				
+				case UNLINK:
+					ok = stack_push(s, n);
+					break;
+				
+				case BUSY:
+					// another thread is currently removing the node from the 
+					// list, just change the state to FREE while the removal is 
+					// taking place
+					// ok = change_state(n, OCC, FREE, BUSY, n->order);
+					// TODO: is this actually correct? Yes. Does it send 
+					// handle_free_node in an infinite loop? Yes.
+					
+					// FIXME: yep, just busy loop
+					break;
+				
+				default:
+					// only remaining option is STACK, which shouldn't happen
+					printf("Can't free node with n->reach %p\n", n->reach);
+					break;
 			}
-			
-			// (node->status == OCC && node_freed) means B occupied the node
-			// (node->status == FREE && !node_freed) is impossible
 		}
 	}
 }
@@ -653,18 +820,17 @@ void _debug_test_nodes() {
 	for (unsigned long i = 0; i < TOTAL_NODES; i++) {
 		node *n = &nodes[i];
 
-		if (n->status == FREE && !IN_LIST(n)) {
+		if (n->state == FREE && n->reach != LIST) {
 			printf("FREE node lost: %p { status = %u, order = %u, cpu = %u, next = %p, prev = %p}\n", 
-				n, n->status, n->order, n->cpu, n->next, n->prev);
+				n, n->state, n->order, OWNER(n), NEXT(n), n->prev);
 		}
 
-		if (n->status == OCC && !IN_LIST(n)) {
-			if (n->stack.len == 0)
-				printf("OCC node out of stack: %p { status = %u, order = %u, cpu = %u, next = %p, prev = %p}\n", 
-				n, n->status, n->order, n->cpu, n->next, n->prev);
+		if (n->state == OCC && n->reach != STACK && n->reach != LIST) {
+			printf("OCC node out of stack and list: %p { status = %u, order = %u, cpu = %u, next = %p, prev = %p}\n", 
+				n, n->state, n->order, OWNER(n), NEXT(n), n->prev);
 		}
 
-		switch (n->status) {
+		switch (n->state) {
 			case FREE:
 				free_count++;
 				break;
@@ -698,9 +864,9 @@ int main(int argc, char const *argv[]) {
 
 		printf("Order %2d: ", j);
 		while (i <= ALL_CPUS) {
-			switch (n->status) {
+			switch (n->state) {
 				case HEAD:
-					printf("|HEAD %d|-", n->cpu);
+					printf("|HEAD %d|-", i);
 					i++;
 					blocks = 0;
 					break;
@@ -710,10 +876,10 @@ int main(int argc, char const *argv[]) {
 					break;
 				default:
 					printf("\nsomething's wrong\n");
-					printf("\tnode: { status = %u, order = %u, cpu = %u}\n", n->status, n->order, n->cpu);
+					printf("\tnode: { status = %u, order = %u, cpu = %u}\n", n->state, n->order, OWNER(n));
 			}
 
-			n = n->next;
+			n = NEXT(n);
 		}
 		printf("\n");
 	}
@@ -722,23 +888,23 @@ int main(int argc, char const *argv[]) {
 	do { // just to collapse the block in the editor
 		printf("\nTrying some stack operations\n");
 
-		node *n = zones[0].heads[MAX_ORDER].next;
+		node *n = NEXT(&zones[0].heads[MAX_ORDER]);
 		remove_node(n);
 
-		stack_push(&zones[0].heads[MAX_ORDER].stack, n);
-		printf("n: %p, stack head: %p\n", n, zones[0].heads[MAX_ORDER].stack.head);
+		stack_push(&zones[0].stacks[MAX_ORDER], n);
+		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
 		
-		n = stack_pop(&zones[0].heads[MAX_ORDER].stack);
-		printf("n: %p, stack head: %p\n", n, zones[0].heads[MAX_ORDER].stack.head);
+		n = stack_pop(&zones[0].stacks[MAX_ORDER]);
+		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
 
-		stack_push(&zones[0].heads[MAX_ORDER].stack, n);
-		printf("n: %p, stack head: %p\n", n, zones[0].heads[MAX_ORDER].stack.head);
+		stack_push(&zones[0].stacks[MAX_ORDER], n);
+		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
 		
-		n = clear_stack(&zones[0].heads[MAX_ORDER].stack);
-		printf("n: %p, stack head: %p\n", n, zones[0].heads[MAX_ORDER].stack.head);
+		n = clear_stack(&zones[0].stacks[MAX_ORDER]);
+		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
 
 		mark_node(n, FREE, OCC);
-		stack_push(&zones[0].heads[MAX_ORDER].stack, n);
+		stack_push(&zones[0].stacks[MAX_ORDER], n);
 	} while (0);
 
 	// Try some allocations
@@ -747,20 +913,20 @@ int main(int argc, char const *argv[]) {
 		unsigned char *addr = bd_xx_malloc(100); // we expect a 1 page long area -> order 0
 		unsigned index = (addr - memory) / PAGE_SIZE;
 		node *n = &nodes[index];
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n, n->status, n->order, n->cpu);
+		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n, n->state, n->order, OWNER(n));
 
 		unsigned char *addr_2 = bd_xx_malloc(4096*12); // we expect a 16 page long area -> order 4
 		unsigned index_2 = (addr_2 - memory) / PAGE_SIZE;
 		node *n_2 = &nodes[index_2];
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->status, n_2->order, n_2->cpu);
+		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->state, n_2->order, OWNER(n_2));
 
 		printf("\nLet's try to release\n");
 		bd_xx_free(addr_2);
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->status, n_2->order, n_2->cpu);
+		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->state, n_2->order, OWNER(n_2));
 
 		bd_xx_free(addr);
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n, n->status, n->order, n->cpu);
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->status, n_2->order, n_2->cpu);
+		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n, n->state, n->order, OWNER(n));
+		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->state, n_2->order, OWNER(n_2));
 
 	} while (0);
 

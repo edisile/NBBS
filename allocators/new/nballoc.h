@@ -32,9 +32,6 @@
 	// Amount of memory the buddy system manages
 	#define TOTAL_MEMORY (TOTAL_NODES * PAGE_SIZE)
 
-	// Get the index of the buddy at idx given its order
-	#define BUDDY_IDX(idx, order) (idx ^ (0x1 << order))
-
 	#define MIN(x,y) (x < y ? x : y)
 	#define MAX(x,y) (x > y ? x : y)
 
