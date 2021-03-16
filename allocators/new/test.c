@@ -5,7 +5,7 @@
 
 #include "nballoc.h"
 
-#define THREADS 4
+#define THREADS 16
 #define ROUNDS (1024*1024)
 #define HISTORY 64
 

@@ -51,7 +51,6 @@ static int insert_node(node *n) {
 
 	unsigned long old = GET_PACK(n);
 	if (UNPACK_REACH(old) != UNLINK || UNPACK_STATE(old) != FREE) {
-		debug(old);
 		return 0;
 	}
 	
@@ -129,7 +128,6 @@ static int remove_node(node *n) {
 	new = MAKE_PACK_NODE(next, UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
 
 	if (!set_pack_node(prev, old, new)) {
-		// debug(old); debug(new); printf("\n");
 		goto retry_1;
 	}
 
@@ -405,6 +403,22 @@ static inline size_t closest_order(size_t s) {
 // Allocation
 // =============================================================================
 
+static inline int move_node(node *n) {
+	int ok = 0;
+	
+	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
+		// FIXME: this uses locks atm, not very poggers
+		
+		ok = remove_node(n);
+		
+		if (ok) {
+			ok = insert_node(n);
+		}
+
+		pthread_mutex_unlock(&locks[OWNER(n)]);
+	}
+}
+
 // Try to allocate a FREE node, returns 1 if allocation succeeded and 0 
 // otherwise; if allocation fails *next_node_ptr is set to point to the next 
 // node to be examined
@@ -427,7 +441,7 @@ static int handle_free_node(node *n, short order, node **next_node_ptr) {
 	} else {
 		// n->order < order <= target_order means the node is in the wrong list
 		*next_node_ptr = next;
-		// move_node(n); // TODO: add move_node
+		move_node(n);
 	}
 
 	return ok;
@@ -684,7 +698,7 @@ static node *try_coalescing(node *n) {
 	if (!change_state(n, OCC, INV, UNLINK, order))
 		goto retry1;
 	
-	for ( ; ; ) { // BUG: there's some problem in here
+	for ( ; ; ) {
 		if (order == MAX_ORDER) break; // can't go higher than this
 
 		node *buddy = &nodes[BUDDY_INDEX(INDEX(n), order)];
