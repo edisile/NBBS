@@ -27,7 +27,6 @@ static pthread_mutex_t *locks = NULL; // to emulate disabling preemption we take
 
 #define INDEX(n_ptr) (n_ptr - nodes)
 #define BUDDY_INDEX(idx, order) (idx ^ (0x1 << order))
-#define BUDDY(n_ptr) ((node *) ((unsigned long) n_ptr) ^ (0x1 << (6 + n_ptr->order)))
 #define OWNER(n_ptr) (INDEX(n_ptr) / nodes_per_cpu)
 
 // =============================================================================
@@ -289,8 +288,8 @@ __attribute__ ((constructor)) void premain() {
 
 	// Allocate the memory for all necessary components
 	memory = aligned_alloc(PAGE_SIZE, TOTAL_MEMORY);
-	nodes = aligned_alloc(CACHE_LINE_SIZE, sizeof(node) * TOTAL_NODES);
-	zones = aligned_alloc(CACHE_LINE_SIZE, sizeof(cpu_zone) * ALL_CPUS);
+	nodes = aligned_alloc(PAGE_SIZE, sizeof(node) * TOTAL_NODES);
+	zones = aligned_alloc(PAGE_SIZE, sizeof(cpu_zone) * ALL_CPUS);
 	locks = malloc(sizeof(pthread_mutex_t) * ALL_CPUS);
 	
 	// Cleanup if any allocation failed
@@ -673,10 +672,41 @@ static node *try_coalescing(node *n) {
 	retry1:;
 	short order = n->order;
 
+	node *buddy = &nodes[BUDDY_INDEX(INDEX(n), order)];
+	// fast path: if the buddy is not free or wrong order just mark n as free
+	if (buddy->state != FREE || buddy->order != order) {
+		if (!change_state(n, OCC, FREE, UNLINK, order))
+			goto retry1;
+		
+		return n;
+	}
+
 	if (!change_state(n, OCC, INV, UNLINK, order))
 		goto retry1;
 	
-	// TODO: rewrite
+	for ( ; ; ) { // BUG: there's some problem in here
+		if (order == MAX_ORDER) break; // can't go higher than this
+
+		node *buddy = &nodes[BUDDY_INDEX(INDEX(n), order)];
+		
+		unsigned long old = GET_PACK(buddy);
+		if (UNPACK_STATE(old) != FREE || UNPACK_ORDER(old) != order) {
+			break;
+		}
+
+		int ok = change_state(buddy, FREE, INV, UNPACK_REACH(old), order);
+		
+		if (ok) {
+			// both buddies are marked as INV and have been logically merged
+			remove_node(buddy);
+			
+			// the leftmost buddy is the one that "absorbs" the other
+			n = MIN(n, buddy);
+
+			order++;
+			n->order = order; // TODO: is this safe? in principle only one thread can access this node
+		}
+	}
 
 	retry2:;
 	if (!change_state(n, INV, FREE, UNLINK, order))
@@ -713,7 +743,7 @@ static void _free(void *addr) {
 	} else {
 		int ok = 0;
 		
-		while (ok == 0) {
+		while (ok == 0 && n->state == OCC) {
 			switch (n->reach) {
 				case LIST:
 					// node is still in the list as it wasn't removed, just mark as free

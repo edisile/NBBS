@@ -31,8 +31,8 @@
 	// to be used for other purposes
 	typedef struct __attribute__((aligned(CACHE_LINE_SIZE))) _node {
 		volatile struct {
-			unsigned long next: 51; // pointer to next node: <sign ext>next<000000> // FIXME: make it smaller
-			unsigned long :      5; // padding // FIXME: use as ABA counter
+			unsigned long next: 51; // pointer to next node: <sign ext>next<000000>
+			unsigned long :      5; // padding
 			unsigned long order: 4; // 0 up to MAX_ORDER included, 0 <= order <= 15
 			unsigned long state: 2; // FREE, INV, OCC, HEAD
 			unsigned long reach: 2; // UNLINK, LIST, STACK, BUSY
