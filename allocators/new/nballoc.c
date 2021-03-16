@@ -278,10 +278,7 @@ __attribute__ ((constructor)) void premain() {
 	printf("initializing buddy system state:\n");
 	// Get the number of CPUs configured on the system; there might be some 
 	// CPUs that are configured but not available (e.g. shut down to save power)
-
-	// ALL_CPUS = sysconf(_SC_NPROCESSORS_CONF); // TODO: enable this again
-	ALL_CPUS = 1; // TODO: remove this
-
+	ALL_CPUS = sysconf(_SC_NPROCESSORS_CONF);
 	nodes_per_cpu = TOTAL_NODES / ALL_CPUS;
 
 	// Allocate the memory for all necessary components
@@ -306,7 +303,7 @@ __attribute__ ((constructor)) void premain() {
 
 	printf("\tallocations done\n");
 
-	memset(memory, 0, TOTAL_MEMORY);
+	// memset(memory, 0, TOTAL_MEMORY); // not necessary
 
 	// All the structures needed are allocated, time to initialize them
 

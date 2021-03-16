@@ -20,7 +20,7 @@
 	#endif
 
 	#ifndef NUM_LEVELS
-		#define NUM_LEVELS 12ULL // 8MB
+		#define NUM_LEVELS 16ULL // 128MB
 	#endif
 	
 	#ifndef STACK_THRESH
