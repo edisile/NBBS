@@ -733,11 +733,16 @@ static void _free(void *addr) {
 
 	assert(n->state == OCC && n->reach != STACK);
 
-	// TODO: add later
-	// if (STACK_LEN(...) <= (STACK_THRESH / 2) && n->reach == UNLINK) {
-	// 	stack_push(s, n);
-	// 	return;
-	// }
+	retry_fast:;
+	// fast path: if there's just few elements in the stack push there and 
+	// don't even care about doing any other work
+	if (LEN(s) <= (STACK_THRESH / 2) && n->reach == UNLINK) {
+		int ok = stack_push(s, n);
+		if (!ok)
+			goto retry_fast;
+		
+		return;
+	}
 	
 	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
 		// FIXME: this uses locks atm

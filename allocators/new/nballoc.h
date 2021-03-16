@@ -24,7 +24,7 @@
 	#endif
 	
 	#ifndef STACK_THRESH
-		#define STACK_THRESH 16ULL // Determines the laziness of the buddy system
+		#define STACK_THRESH 32ULL // Determines the laziness of the buddy system
 	#endif
 
 	// Number of nodes, one per page
