@@ -391,7 +391,7 @@ static inline unsigned long cpu_id() {
 
 // Get the minimum allocation order that satisfies a request of size s
 static inline size_t closest_order(size_t s) {
-	if (s <= PAGE_SIZE) return 0;
+	if (s <= MIN_ALLOCABLE_BYTES) return 0;
 	
 	return 64 - __builtin_clzl(s - 1) - 12;
 }
@@ -663,13 +663,11 @@ static void *_alloc(size_t size) {
 	}
 
 	done:
-	// printf("\tbase memory address: %p\n", memory);
-	// printf("\tnode index %p, page address %p\n", n - nodes, memory + (n - nodes) * PAGE_SIZE);
-	return (void *) (memory + INDEX(n) * PAGE_SIZE);
+	return (void *) (memory + INDEX(n) * MIN_ALLOCABLE_BYTES);
 }
 
 void* bd_xx_malloc(size_t size) {
-	if ((size / PAGE_SIZE) > (0x1 << MAX_ORDER))
+	if ((size / MIN_ALLOCABLE_BYTES) > (0x1 << MAX_ORDER))
 		return NULL; // this size is bigger than the max the allocator supports
 
 	return _alloc(size);
@@ -727,7 +725,7 @@ static node *try_coalescing(node *n) {
 }
 
 static void _free(void *addr) {
-	unsigned long index = ((unsigned char *)addr - memory) / PAGE_SIZE;
+	unsigned long index = ((unsigned char *)addr - memory) / MIN_ALLOCABLE_BYTES;
 	node *n = &nodes[index];
 	stack *s = &zones[OWNER(n)].stacks[n->order];
 
@@ -899,12 +897,12 @@ int main(int argc, char const *argv[]) {
 	do { // just to collapse the block in the editor
 		printf("\nTrying some allocations\n");
 		unsigned char *addr = bd_xx_malloc(100); // we expect a 1 page long area -> order 0
-		unsigned index = (addr - memory) / PAGE_SIZE;
+		unsigned index = (addr - memory) / MIN_ALLOCABLE_BYTES;
 		node *n = &nodes[index];
 		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n, n->state, n->order, OWNER(n));
 
 		unsigned char *addr_2 = bd_xx_malloc(4096*12); // we expect a 16 page long area -> order 4
-		unsigned index_2 = (addr_2 - memory) / PAGE_SIZE;
+		unsigned index_2 = (addr_2 - memory) / MIN_ALLOCABLE_BYTES;
 		node *n_2 = &nodes[index_2];
 		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->state, n_2->order, OWNER(n_2));
 

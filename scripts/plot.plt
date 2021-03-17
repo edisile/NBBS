@@ -34,8 +34,8 @@ d=1900000000
 set xlabel "#Threads\n"
 
 set size 0.9,0.9
-set xtic autofreq 6
-set xrange [-1:49]
+set xtic autofreq 4
+set xrange [0:32]
 set key reverse bmargin center horizontal Left
 
 set grid x

@@ -5,7 +5,7 @@
 
 #include "nballoc.h"
 
-#define THREADS 16
+#define THREADS 64
 #define ROUNDS (1024*1024)
 #define HISTORY 64
 
@@ -22,7 +22,7 @@ void *thread_job(void *arg) {
 
 	for (int i = 0; i < ROUNDS; i++) {
 		// printf("%d is allocating\n", arg);
-		void *addr = bd_xx_malloc(1000);
+		void *addr = bd_xx_malloc(32768);
 		values[i % HISTORY] = addr;
 
 		// printf("%d got %p\n", id, addr);

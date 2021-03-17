@@ -18,6 +18,7 @@ debug/*
 larson*-nb
 larson*-sl
 TB_*-nb
+TB_*-new
 TB_*-sl
 *-ptmalloc3
 *-hoard

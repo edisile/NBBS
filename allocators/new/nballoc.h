@@ -5,7 +5,10 @@
 	#include <stddef.h>
 
 	#define CACHE_LINE_SIZE 64ULL
-	#define MAX_ORDER 10ULL
+
+	#ifndef MAX_ORDER
+		#define MAX_ORDER 10ULL
+	#endif
 
 	#ifndef PAGE_SIZE
 		#define PAGE_SIZE 4096ULL
@@ -16,7 +19,7 @@
 	#endif
 
 	#ifndef MAX_ALLOCABLE_BYTES
-		#define MAX_ALLOCABLE_BYTES (PAGE_SIZE << MAX_ORDER)
+		#define MAX_ALLOCABLE_BYTES (MIN_ALLOCABLE_BYTES << MAX_ORDER)
 	#endif
 
 	#ifndef NUM_LEVELS
@@ -30,7 +33,7 @@
 	// Number of nodes, one per page
 	#define TOTAL_NODES (1 << (NUM_LEVELS - 1))
 	// Amount of memory the buddy system manages
-	#define TOTAL_MEMORY (TOTAL_NODES * PAGE_SIZE)
+	#define TOTAL_MEMORY (TOTAL_NODES * MIN_ALLOCABLE_BYTES)
 
 	#define MIN(x,y) (x < y ? x : y)
 	#define MAX(x,y) (x > y ? x : y)

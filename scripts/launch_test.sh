@@ -2,8 +2,10 @@
 
 source config.sh
 
+cd ../
 make clean
 make NUM_LEVELS=${NUM_LEVELS} MAX=${MAX} MIN=${MIN}
+cd ./scripts
 
 mkdir -p ${FOLDER}
 
