@@ -23,11 +23,31 @@ static unsigned char *memory = NULL; // pointer to the memory managed by the bud
 static cpu_zone *zones = NULL; // a list of arrays of heads and stacks
 static node *nodes = NULL; // a list of all nodes, one for each page
 // FIXME: find a way to get rid of this
-static pthread_mutex_t *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
+static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
 
 #define INDEX(n_ptr) (n_ptr - nodes)
 #define BUDDY_INDEX(idx, order) (idx ^ (0x1 << order))
 #define OWNER(n_ptr) (INDEX(n_ptr) / nodes_per_cpu)
+
+// =============================================================================
+// Lock ops
+// =============================================================================
+
+static inline int try_lock(lock *l) {
+	if (l->var != 0)
+		return 0;
+	
+	return bCAS(&l->var, 0, 1);
+}
+
+static inline void unlock_lock(lock *l) {
+	assert(l->var == 1);
+	while (!bCAS(&l->var, 1, 0));
+}
+
+static inline void init_lock(lock *l) {
+	l->var = 0;
+}
 
 // =============================================================================
 // List ops
@@ -285,7 +305,7 @@ __attribute__ ((constructor)) void premain() {
 	memory = aligned_alloc(PAGE_SIZE, TOTAL_MEMORY);
 	nodes = aligned_alloc(PAGE_SIZE, sizeof(node) * TOTAL_NODES);
 	zones = aligned_alloc(PAGE_SIZE, sizeof(cpu_zone) * ALL_CPUS);
-	locks = malloc(sizeof(pthread_mutex_t) * ALL_CPUS);
+	locks = malloc(sizeof(lock) * ALL_CPUS);
 	
 	// Cleanup if any allocation failed
 	if (memory == NULL || nodes == NULL || zones == NULL || locks == NULL) {
@@ -309,7 +329,7 @@ __attribute__ ((constructor)) void premain() {
 
 	// First initialize and connect all the heads in the cpu_zones
 	for (int i = 0; i < ALL_CPUS; i++) {
-		pthread_mutex_init(&locks[i], NULL);
+		init_lock(&locks[i]);
 
 		for (int j = 0; j <= MAX_ORDER; j++) {
 
@@ -336,8 +356,6 @@ __attribute__ ((constructor)) void premain() {
 // =============================================================================
 // Convenience functions
 // =============================================================================
-
-// #define mark_node(n, old_status, new_status) (bCAS(&n->state, old_status, new_status))
 
 static inline int change_state(node *n, short old_state, short new_state, 
 		short exp_reach, short exp_order) {
@@ -403,7 +421,7 @@ static inline size_t closest_order(size_t s) {
 static inline int move_node(node *n) {
 	int ok = 0;
 	
-	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
+	if (try_lock(&locks[OWNER(n)])) {
 		// FIXME: this uses locks atm, not very poggers
 		
 		ok = remove_node(n);
@@ -412,7 +430,7 @@ static inline int move_node(node *n) {
 			ok = insert_node(n);
 		}
 
-		pthread_mutex_unlock(&locks[OWNER(n)]);
+		unlock_lock(&locks[OWNER(n)]);
 	}
 }
 
@@ -450,13 +468,13 @@ static int handle_occ_node(node *n, node **next_node_ptr) {
 	node *next = NEXT(n);
 	int ok = 0;
 	
-	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
+	if (try_lock(&locks[OWNER(n)])) {
 		// FIXME: this uses locks atm, not very poggers
 		
 		ok = remove_node(n);
 		// remove_node fails if (n->state == FREE || n->reach != LIST)
 
-		pthread_mutex_unlock(&locks[OWNER(n)]);
+		unlock_lock(&locks[OWNER(n)]);
 	}
 
 	// check if remove_node failed and/or there's been a concurrent free the 
@@ -593,7 +611,7 @@ static void split_node(node *n, size_t target_order) {
 		
 		int ok = 0;
 
-		if (pthread_mutex_trylock(&locks[OWNER(buddy)]) == 0) {
+		if (try_lock(&locks[OWNER(buddy)])) {
 			// FIXME: this uses locks atm, not very poggers
 			unsigned long new = MAKE_PACK_NODE(NULLN, buddy_order, 
 					FREE, UNLINK);
@@ -602,7 +620,7 @@ static void split_node(node *n, size_t target_order) {
 			if (ok)
 				insert_node(buddy);
 			
-			pthread_mutex_unlock(&locks[OWNER(buddy)]);
+			unlock_lock(&locks[OWNER(buddy)]);
 
 		} else {
 			
@@ -650,13 +668,13 @@ static void *_alloc(size_t size) {
 
 	// fallback path, check if the node is owned by the current executing CPU; 
 	// if it is disable preemption and remove it
-	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
+	if (try_lock(&locks[OWNER(n)])) {
 		// FIXME: this uses locks atm, not very poggers
 		if (n->reach == LIST) {
 			// the node was taken from the list and is still there
 			remove_node(n);
 		}
-		pthread_mutex_unlock(&locks[OWNER(n)]);
+		unlock_lock(&locks[OWNER(n)]);
 	} else {
 		// not a problem, when a thread on the correct CPU reaches this node 
 		// it will try to remove it
@@ -742,7 +760,7 @@ static void _free(void *addr) {
 		return;
 	}
 	
-	if (pthread_mutex_trylock(&locks[OWNER(n)]) == 0) {
+	if (try_lock(&locks[OWNER(n)])) {
 		// FIXME: this uses locks atm
 		if (n->reach == LIST) {
 			// node might not have been removed before being freed
@@ -752,7 +770,7 @@ static void _free(void *addr) {
 		n = try_coalescing(n);
 		insert_node(n);
 
-		pthread_mutex_unlock(&locks[OWNER(n)]);
+		unlock_lock(&locks[OWNER(n)]);
 
 	} else {
 		int ok = 0;
@@ -886,10 +904,11 @@ int main(int argc, char const *argv[]) {
 		stack_push(&zones[0].stacks[MAX_ORDER], n);
 		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
 		
-		n = clear_stack(&zones[0].stacks[MAX_ORDER]);
+		n = stack_clear(&zones[0].stacks[MAX_ORDER]);
 		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
 
-		mark_node(n, FREE, OCC);
+		n->state = OCC;
+		n->reach = UNLINK;
 		stack_push(&zones[0].stacks[MAX_ORDER], n);
 	} while (0);
 

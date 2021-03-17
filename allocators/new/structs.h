@@ -63,6 +63,11 @@
 		stack stacks[MAX_ORDER + 1];
 	} cpu_zone;
 
+	// Yes, we're rolling our own locks
+	typedef struct __attribute__((aligned(CACHE_LINE_SIZE))) _lock {
+		unsigned long var;
+	} lock;
+
 	// =========================================================================
 	// Macros
 	// =========================================================================
