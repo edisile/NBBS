@@ -31,7 +31,7 @@
 	#endif
 
 	// Number of nodes, one per page
-	#define TOTAL_NODES (1 << (NUM_LEVELS - 1))
+	#define TOTAL_NODES (1ULL << (NUM_LEVELS - 1))
 	// Amount of memory the buddy system manages
 	#define TOTAL_MEMORY (TOTAL_NODES * MIN_ALLOCABLE_BYTES)
 

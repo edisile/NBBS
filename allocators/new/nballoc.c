@@ -301,6 +301,7 @@ __attribute__ ((constructor)) void premain() {
 	ALL_CPUS = sysconf(_SC_NPROCESSORS_CONF);
 	nodes_per_cpu = TOTAL_NODES / ALL_CPUS;
 
+	printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
 	// Allocate the memory for all necessary components
 	memory = aligned_alloc(PAGE_SIZE, TOTAL_MEMORY);
 	nodes = aligned_alloc(PAGE_SIZE, sizeof(node) * TOTAL_NODES);
@@ -314,9 +315,8 @@ __attribute__ ((constructor)) void premain() {
 		if(zones != NULL) free(zones);
 
 		if(locks != NULL) free(locks);
-		fprintf(stderr, "An allocation failed:\n\
-			\tmemory: %p\n\tnodes: %p\n\tzones: %p\n\tlocks: %p\n", 
-			memory, nodes, zones, locks);
+		fprintf(stderr, "An allocation failed:\n\tmemory: %p\n\tnodes: %p\n\tzones: %p\n\tlocks: %p\n", 
+				memory, nodes, zones, locks);
 
 		abort();
 	}
@@ -420,8 +420,8 @@ static inline size_t closest_order(size_t s) {
 
 static inline int move_node(node *n) {
 	int ok = 0;
-	
-	if (try_lock(&locks[OWNER(n)])) {
+	unsigned owner = OWNER(n);
+	if (try_lock(&locks[owner])) {
 		// FIXME: this uses locks atm, not very poggers
 		
 		ok = remove_node(n);
@@ -430,14 +430,14 @@ static inline int move_node(node *n) {
 			ok = insert_node(n);
 		}
 
-		unlock_lock(&locks[OWNER(n)]);
+		unlock_lock(&locks[owner]);
 	}
 }
 
 // Try to allocate a FREE node, returns 1 if allocation succeeded and 0 
 // otherwise; if allocation fails *next_node_ptr is set to point to the next 
 // node to be examined
-static int handle_free_node(node *n, short order, node **next_node_ptr) {
+static inline int handle_free_node(node *n, short order, node **next_node_ptr) {
 	short n_order = n->order;
 	node *next = NEXT(n);
 	int ok = 0;
@@ -464,17 +464,18 @@ static int handle_free_node(node *n, short order, node **next_node_ptr) {
 
 // Attempt to remove a node from the list, returns 1 if removal was successful 
 // or 0 otherwise; *next_node_ptr is set to point to the next node to visit
-static int handle_occ_node(node *n, node **next_node_ptr) {
+static inline int handle_occ_node(node *n, node **next_node_ptr) {
 	node *next = NEXT(n);
 	int ok = 0;
-	
-	if (try_lock(&locks[OWNER(n)])) {
+	unsigned owner = OWNER(n);
+
+	if (try_lock(&locks[owner])) {
 		// FIXME: this uses locks atm, not very poggers
 		
 		ok = remove_node(n);
 		// remove_node fails if (n->state == FREE || n->reach != LIST)
 
-		unlock_lock(&locks[OWNER(n)]);
+		unlock_lock(&locks[owner]);
 	}
 
 	// check if remove_node failed and/or there's been a concurrent free the 
@@ -547,6 +548,7 @@ static node *get_free_node(size_t order) {
 				break;
 			
 			case HEAD:
+				// TODO: this is wrong, stack should be tried at every head visited
 				cpus_visited++;
 				if (cpus_visited > ALL_CPUS) {
 					target_order++;
@@ -558,6 +560,7 @@ static node *get_free_node(size_t order) {
 						goto done;
 					}
 				}
+				n = NEXT(n);
 
 				break;
 			
@@ -579,6 +582,7 @@ static node *get_free_node(size_t order) {
 static void split_node(node *n, size_t target_order) {
 	size_t current_order = n->order;
 	unsigned long n_index = INDEX(n);
+	unsigned owner = OWNER(n);
 
 	// First set the new order of n atomically
 	// TODO: this could be done when occupying the node in get_free_node saving 
@@ -586,10 +590,7 @@ static void split_node(node *n, size_t target_order) {
 	// argument a (size_t *) where the current order of the occupied node will 
 	// be put after the allocation
 	retry_set_order:;
-	if (n->state != OCC || n->reach == STACK) {
-		printf("This shouldn't happen...\n");
-		debug(GET_PACK(n));
-	}
+	assert(n->state == OCC && n->reach != STACK);
 
 	if (!change_order(n, current_order, target_order, OCC, n->reach))
 		goto retry_set_order;
@@ -604,32 +605,33 @@ static void split_node(node *n, size_t target_order) {
 		
 		retry_buddy:;
 		unsigned long old = GET_PACK(buddy);
-		if (UNPACK_REACH(old) != UNLINK || UNPACK_STATE(old) != INV) {
-			printf("This shouldn't happen...\n");
-			debug(old);
-		}
+
+		assert(UNPACK_REACH(old) == UNLINK && UNPACK_STATE(old) == INV);
 		
 		int ok = 0;
 
-		if (try_lock(&locks[OWNER(buddy)])) {
+		if (try_lock(&locks[owner])) {
+			// TODO: this path is used a lot and needs 5 bCAS calls to complete; 
+			// make a fast path similar to the one used in _free
+
 			// FIXME: this uses locks atm, not very poggers
 			unsigned long new = MAKE_PACK_NODE(NULLN, buddy_order, 
 					FREE, UNLINK);
 			
-			ok = set_pack_node(buddy, old, new);
+			ok = set_pack_node(buddy, old, new); // TODO: can this even fail?
 			if (ok)
 				insert_node(buddy);
 			
-			unlock_lock(&locks[OWNER(buddy)]);
+			unlock_lock(&locks[owner]);
 
 		} else {
 			
 			unsigned long new = MAKE_PACK_NODE(NULLN, buddy_order, 
 					OCC, UNLINK);
 
-			ok = set_pack_node(buddy, old, new);
+			ok = set_pack_node(buddy, old, new); // TODO: can this even fail?
 			if (ok)
-				stack_push(&zones[OWNER(buddy)].stacks[buddy_order], buddy);
+				stack_push(&zones[owner].stacks[buddy_order], buddy);
 
 		}
 
@@ -668,13 +670,14 @@ static void *_alloc(size_t size) {
 
 	// fallback path, check if the node is owned by the current executing CPU; 
 	// if it is disable preemption and remove it
-	if (try_lock(&locks[OWNER(n)])) {
+	unsigned owner = OWNER(n);
+	if (try_lock(&locks[owner])) {
 		// FIXME: this uses locks atm, not very poggers
 		if (n->reach == LIST) {
 			// the node was taken from the list and is still there
 			remove_node(n);
 		}
-		unlock_lock(&locks[OWNER(n)]);
+		unlock_lock(&locks[owner]);
 	} else {
 		// not a problem, when a thread on the correct CPU reaches this node 
 		// it will try to remove it
@@ -731,7 +734,7 @@ static node *try_coalescing(node *n) {
 			n = MIN(n, buddy);
 
 			order++;
-			n->order = order; // TODO: is this safe? in principle only one thread can access this node
+			n->order = order;
 		}
 	}
 
@@ -745,7 +748,8 @@ static node *try_coalescing(node *n) {
 static void _free(void *addr) {
 	unsigned long index = ((unsigned char *)addr - memory) / MIN_ALLOCABLE_BYTES;
 	node *n = &nodes[index];
-	stack *s = &zones[OWNER(n)].stacks[n->order];
+	unsigned owner = OWNER(n);
+	stack *s = &zones[owner].stacks[n->order];
 
 	assert(n->state == OCC && n->reach != STACK);
 
@@ -760,7 +764,7 @@ static void _free(void *addr) {
 		return;
 	}
 	
-	if (try_lock(&locks[OWNER(n)])) {
+	if (try_lock(&locks[owner])) {
 		// FIXME: this uses locks atm
 		if (n->reach == LIST) {
 			// node might not have been removed before being freed
@@ -770,7 +774,7 @@ static void _free(void *addr) {
 		n = try_coalescing(n);
 		insert_node(n);
 
-		unlock_lock(&locks[OWNER(n)]);
+		unlock_lock(&locks[owner]);
 
 	} else {
 		int ok = 0;
