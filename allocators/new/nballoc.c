@@ -231,8 +231,6 @@ static node *stack_pop(stack *s) {
 	head->reach = UNLINK;
 	head->prev = NULLN;
 
-	mfence(); // MAYBE: is this necessary?
-
 	return head;
 }
 
@@ -493,9 +491,8 @@ static inline int handle_occ_node(node *n, node **next_node_ptr) {
 // can satisfy the request is found
 static node *get_free_node(size_t order) {
 	stack *s;
-	node *n, *popped, *next_node;
+	node *n, *popped = NULLN, *next_node = NULLN;
 	size_t target_order;
-	unsigned cpus_visited = 1;
 	
 	restart:;
 	unsigned cpu = cpu_id();
@@ -503,24 +500,10 @@ static node *get_free_node(size_t order) {
 
 	target_order = order;
 
-	retry_stack:
-	n = NEXT(&zones[cpu].heads[target_order]);
-	s = &zones[cpu].stacks[target_order];
-	popped = NULLN;
+	next_order:;
+	n = &zones[cpu].heads[target_order];
 
-	popped = stack_pop(s);
-	if (popped != NULLN) {
-		n = popped;
-
-		assert(n->state == OCC);
-		assert(n->reach == UNLINK);
-		assert(n->prev == NULLN);
-		assert(NEXT(n) == NULLN);
-		
-		goto done;
-	}
-
-	cpus_visited = 1;
+	unsigned cpus_visited = 0;
 	for ( ; ; ) {
 		// this might happen if a thread sleeps holding a reference to a node 
 		// that gets removed before the thread wakes up again
@@ -529,6 +512,36 @@ static node *get_free_node(size_t order) {
 		}
 
 		switch (n->state) {
+			case HEAD:
+				s = &zones[(cpu + cpus_visited) % ALL_CPUS].stacks[target_order];
+				cpus_visited++;
+				
+				if (cpus_visited < ALL_CPUS) {
+					popped = stack_pop(s);
+					if (popped != NULLN) {
+						n = popped;
+
+						assert(n->state == OCC && n->reach == UNLINK && 
+								n->prev == NULLN && NEXT(n) == NULLN);
+						
+						goto done;
+					}
+				} else {
+					// all cpu zones have been visited without finding anything
+					target_order++;
+					
+					if (target_order <= MAX_ORDER) {
+						goto next_order;
+					} else {
+						// There's no memory to satisfy this allocation
+						n = NULLN;
+						goto done;
+					}
+				}
+				n = NEXT(n);
+
+				break;
+
 			case FREE:
 				if (handle_free_node(n, target_order, &next_node)) {
 					assert(n->state == OCC);
@@ -547,22 +560,6 @@ static node *get_free_node(size_t order) {
 				n = next_node;
 				break;
 			
-			case HEAD:
-				// TODO: this is wrong, stack should be tried at every head visited
-				cpus_visited++;
-				if (cpus_visited > ALL_CPUS) {
-					target_order++;
-					if (target_order <= MAX_ORDER) {
-						goto retry_stack;
-					} else {
-						// There's no memory to satisfy this allocation
-						n = NULLN;
-						goto done;
-					}
-				}
-				n = NEXT(n);
-
-				break;
 			
 			default:
 				fprintf(stderr, "There's a node with a wrong status value:\n\t%p: %p",
