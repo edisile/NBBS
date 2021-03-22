@@ -3,7 +3,7 @@ BASE_ALLOCATORS = $(abspath ../../allocators)
 PATH_ALLOCATORS = $(subst $(BASE_ALLOCATORS)/Makefile,  , $(wildcard $(BASE_ALLOCATORS)/*))
 ALLOCATORS = $(filter-out Makefile nballoc.mk hoard 1lvl-ll, $(subst $(BASE_ALLOCATORS)/,  ,  $(PATH_ALLOCATORS))) kernel-sl
 INTERMEDIATE_OBJS_PATH = bin
-MY_ALLOCATORS = 1lvl-nb 1lvl-sl 4lvl-nb 4lvl-sl buddy-sl
+MY_ALLOCATORS = 1lvl-nb 1lvl-sl 4lvl-nb 4lvl-sl new buddy-sl
 
 CC=gcc
 CFLAGS= -I$(BASE_ALLOCATORS)/$* -I../../utils 
@@ -22,6 +22,10 @@ $(INTERMEDIATE_OBJS_PATH):
 $(TARGET)-%-nb: $(SRCS) #$(BASE_ALLOCATORS)/$(TARGET)-%-nb/nballoc.o
 	@echo compiling for $@
 	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/$*-nb) -L$(abspath ../../allocators/$*-nb) -l$*-nb  -o $(TARGET)-$*-nb -DALLOCATOR=$*-nb -D'TO_BE_REPLACED_MALLOC(x)=bd_xx_malloc(x)' -D'TO_BE_REPLACED_FREE(x)=bd_xx_free(x)' -lpthread -D'ALLOCATOR_NAME="$*-nb"'
+
+$(TARGET)-new: $(SRCS) #$(BASE_ALLOCATORS)/$(TARGET)-%-nb/nballoc.o
+	@echo compiling for $@
+	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/new) -L$(abspath ../../allocators/new) -lnew  -o $(TARGET)-new -DALLOCATOR=new -D'TO_BE_REPLACED_MALLOC(x)=bd_xx_malloc(x)' -D'TO_BE_REPLACED_FREE(x)=bd_xx_free(x)' -lpthread -D'ALLOCATOR_NAME="new"'
 
 $(TARGET)-kernel-sl:  $(SRCS)
 	@echo compiling for $@

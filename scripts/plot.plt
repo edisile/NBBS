@@ -1,4 +1,4 @@
-set terminal postscript eps size 5,4 enhanced color font 'cmu10, 22'
+set terminal postscript eps size 5,4 enhanced color font 'cmu10, 22' linewidth 3
 
 if ( tst eq "TBTT" ) set ylabel offset 0 "Seconds (s)" 
 if ( tst eq "TBLS" ) set ylabel offset 0 "Seconds (s)" 
@@ -28,7 +28,7 @@ if ( tst eq "TBTT" ) if ( sz eq "1048576" ) set yrange [-2:1000]
 
 
 d=2000000000
-d=1900000000
+d=2500000000
 
 
 set xlabel "#Threads\n"

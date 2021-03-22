@@ -42,7 +42,8 @@ static inline int try_lock(lock *l) {
 
 static inline void unlock_lock(lock *l) {
 	assert(l->var == 1);
-	while (!bCAS(&l->var, 1, 0));
+	// while (!bCAS(&l->var, 1, 0)); // it's not necessary to be atomic
+	l->var = 0; // lazy lock release
 }
 
 static inline void init_lock(lock *l) {
@@ -489,7 +490,7 @@ static inline int handle_occ_node(node *n, node **next_node_ptr) {
 // Navigate the list in search for a free node and allocate it; returns either 
 // a pointer to an actual node n with n->state == OCC or NULLN if no block that 
 // can satisfy the request is found
-static node *get_free_node(size_t order) {
+static node *get_free_node(size_t order, unsigned cpus_limit) {
 	stack *s;
 	node *n, *popped = NULLN, *next_node = NULLN;
 	size_t target_order;
@@ -516,7 +517,7 @@ static node *get_free_node(size_t order) {
 				s = &zones[(cpu + cpus_visited) % ALL_CPUS].stacks[target_order];
 				cpus_visited++;
 				
-				if (cpus_visited < ALL_CPUS) {
+				if (cpus_visited < cpus_limit) {
 					popped = stack_pop(s);
 					if (popped != NULLN) {
 						n = popped;
@@ -572,6 +573,12 @@ static node *get_free_node(size_t order) {
 	done:;
 	// printf("Occupied node: %p\n", n);
 	return n;
+}
+
+// Try to get a memory block from the current CPU zone
+static inline node *get_free_node_fast(size_t order) {
+	// 2 is because the check that counts the numbers of CPU zones visited is <
+	return get_free_node(order, 2);
 }
 
 // Repeatedly split n in half until it reaches target_order; the second half 
@@ -640,7 +647,11 @@ static void split_node(node *n, size_t target_order) {
 static void *_alloc(size_t size) {
 	size_t order = closest_order(size);
 
-	node *n = get_free_node(order);
+	node *n = get_free_node_fast(order);
+
+	if (n == NULLN)
+		n = get_free_node(order, ALL_CPUS);
+	
 	if (n == NULLN) return NULL;
 
 	// check whether n is bigger than expected and needs to be fragmented

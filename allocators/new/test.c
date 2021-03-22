@@ -5,45 +5,48 @@
 
 #include "nballoc.h"
 
-#define THREADS 64
-#define ROUNDS (1024*1024)
-#define HISTORY 64
+#define THREADS 16
+#define ROUNDS 1024
+#define HISTORY 12288
+#define SIZE (1ULL << 12)
 
 pthread_barrier_t barrier;
 
 void *thread_job(void *arg) {
 	unsigned long id = (unsigned long) arg;
+	unsigned long fail = 0;
 	void *values[HISTORY];
 	unsigned long tid = gettid();
 
 	// printf("%d is waiting\n", arg);
-	pthread_barrier_wait(&barrier);
+	// pthread_barrier_wait(&barrier);
 	// printf("%d is starting\n", arg);
 
 	for (int i = 0; i < ROUNDS; i++) {
 		// printf("%d is allocating\n", arg);
-		void *addr = bd_xx_malloc(32768);
-		values[i % HISTORY] = addr;
-
-		// printf("%d got %p\n", id, addr);
-		// pthread_barrier_wait(&barrier);
-		// usleep(100000);
-
-		if (addr == NULL) {
-			printf("%d got a big fat NULL\n", arg);
-		} else {
-			bd_xx_free(addr);
-			// printf("%d is deallocating %p\n", arg, addr);
+		int j = 0;
+		while (j < HISTORY) {
+			values[j] = bd_xx_malloc(SIZE);
+			if (values[j] != NULL) {
+				j++;
+			} else {
+				fail++;
+			}
 		}
-		// usleep(100);
+
+		for (int j = 0; j < HISTORY; j++) {
+			bd_xx_free(values[j]);
+		}
 	}
-	printf("%d is done\n", arg);
+	printf("%d is done; got %lu failures\n", arg, fail);
 
 	return NULL;
 }
 
 int main(int argc, char const *argv[]) {
 	pthread_t threads[THREADS];
+	printf("Launching %lu threads allocating %lu blocks of size %luB\n", THREADS, HISTORY, SIZE);
+	fflush(stdout);
 
 	pthread_barrier_init(&barrier, NULL, THREADS);
 
