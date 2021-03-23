@@ -25,6 +25,28 @@ static node *nodes = NULL; // a list of all nodes, one for each page
 // FIXME: find a way to get rid of this
 static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
 
+// Some per-thread variables
+__thread unsigned alloc_count = 0;
+__thread unsigned char alloc_hist[HISTORY_LEN] = {0}; // the last orders of allocations made by a thread
+__thread unsigned alloc_distr[MAX_ORDER + 1] = {0}; // the number of allocations of each order
+
+static inline void estimate_distr() {	
+	for (int i = 0; i <= MAX_ORDER; i++) {
+		alloc_distr[i] = 0;
+	}
+
+	for (int i = 0; i < HISTORY_LEN; i++) {
+		alloc_distr[alloc_hist[i]]++;
+	}
+}
+
+static inline void update_hist(node *n) {
+	alloc_hist[alloc_count % HISTORY_LEN] = n->order;
+	alloc_count++;
+
+	if (alloc_count % HISTORY_LEN == 0) estimate_distr();
+}
+
 #define INDEX(n_ptr) (n_ptr - nodes)
 #define BUDDY_INDEX(idx, order) (idx ^ (0x1 << order))
 #define OWNER(n_ptr) (INDEX(n_ptr) / nodes_per_cpu)
@@ -508,7 +530,8 @@ static node *get_free_node(size_t order, unsigned cpus_limit) {
 	for ( ; ; ) {
 		// this might happen if a thread sleeps holding a reference to a node 
 		// that gets removed before the thread wakes up again
-		if (n->reach == UNLINK || n->reach == STACK) {
+		unsigned short n_reach = n->reach;
+		if (n_reach == UNLINK || n_reach == STACK) {
 			goto restart;
 		}
 
@@ -692,6 +715,7 @@ static void *_alloc(size_t size) {
 	}
 
 	done:
+	if (n != NULLN) update_hist(n);
 	return (void *) (memory + INDEX(n) * MIN_ALLOCABLE_BYTES);
 }
 
@@ -756,15 +780,18 @@ static node *try_coalescing(node *n) {
 static void _free(void *addr) {
 	unsigned long index = ((unsigned char *)addr - memory) / MIN_ALLOCABLE_BYTES;
 	node *n = &nodes[index];
+	unsigned n_order = n->order;
 	unsigned owner = OWNER(n);
-	stack *s = &zones[owner].stacks[n->order];
+	stack *s = &zones[owner].stacks[n_order];
 
 	assert(n->state == OCC && n->reach != STACK);
 
 	retry_fast:;
 	// fast path: if there's just few elements in the stack push there and 
 	// don't even care about doing any other work
-	if (LEN(s) <= (STACK_THRESH / 2) && n->reach == UNLINK) {
+	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] > HISTORY_LEN / 4) 
+			&& n->reach == UNLINK) {
+
 		int ok = stack_push(s, n);
 		if (!ok)
 			goto retry_fast;
@@ -830,7 +857,9 @@ void bd_xx_free(void *addr) {
 void _debug_test_nodes() {
 	printf("Checking if all nodes are ok...\n");
 	unsigned long free_count = 0;
+	unsigned long free_mem = 0;
 	unsigned long occ_count = 0;
+	unsigned long occ_mem = 0;
 	unsigned long inv_count = 0;
 
 	for (unsigned long i = 0; i < TOTAL_NODES; i++) {
@@ -849,9 +878,11 @@ void _debug_test_nodes() {
 		switch (n->state) {
 			case FREE:
 				free_count++;
+				free_mem += PAGE_SIZE << n->order;
 				break;
 			case OCC:
 				occ_count++;
+				occ_mem += PAGE_SIZE << n->order;
 				break;
 			case INV:
 				inv_count++;
@@ -861,7 +892,8 @@ void _debug_test_nodes() {
 		}
 	}
 
-	printf("\tFREE: %lu\n\tOCC: %lu\n\tINV: %lu\n", free_count, occ_count, inv_count);
+	printf("\tFREE: %lu, %luB\n\tOCC: %lu, %luB\n\tINV: %lu\n", 
+			free_count, free_mem, occ_count, occ_mem, inv_count);
 
 	printf("Done!\n");
 }
