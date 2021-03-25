@@ -49,7 +49,7 @@ static inline void update_hist(node *n) {
 
 #define INDEX(n_ptr) (n_ptr - nodes)
 #define BUDDY_INDEX(idx, order) (idx ^ (0x1 << order))
-#define OWNER(n_ptr) (INDEX(n_ptr) / nodes_per_cpu)
+#define OWNER(n_ptr) ((INDEX(n_ptr) / nodes_per_cpu) % ALL_CPUS)
 
 // =============================================================================
 // Lock ops
@@ -64,8 +64,8 @@ static inline int try_lock(lock *l) {
 
 static inline void unlock_lock(lock *l) {
 	assert(l->var == 1);
-	// while (!bCAS(&l->var, 1, 0)); // it's not necessary to be atomic
-	l->var = 0; // lazy lock release
+	while (!bCAS(&l->var, 1, 0)); // it's not necessary to be atomic
+	// l->var = 0; // lazy lock release
 }
 
 static inline void init_lock(lock *l) {
@@ -89,8 +89,9 @@ static int insert_node(node *n) {
 	unsigned cpu = OWNER(n);
 	node *target = &zones[cpu].heads[n->order];
 
-	assert(target->state == HEAD && target->reach == LIST && 
-		n->order == target->order);
+	assert(target->state == HEAD);
+	assert(target->reach == LIST);
+	assert(n->order == target->order);
 
 	unsigned long old = GET_PACK(n);
 	if (UNPACK_REACH(old) != UNLINK || UNPACK_STATE(old) != FREE) {
@@ -166,7 +167,8 @@ static int remove_node(node *n) {
 	// }
 
 	old = GET_PACK(prev);
-	assert(UNPACK_NEXT(old) == n && UNPACK_REACH(old) == LIST);
+	assert(UNPACK_NEXT(old) == n);
+	assert(UNPACK_REACH(old) == LIST);
 
 	new = MAKE_PACK_NODE(next, UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
 
@@ -320,7 +322,10 @@ __attribute__ ((constructor)) void premain() {
 	// Get the number of CPUs configured on the system; there might be some 
 	// CPUs that are configured but not available (e.g. shut down to save power)
 	ALL_CPUS = sysconf(_SC_NPROCESSORS_CONF);
-	nodes_per_cpu = TOTAL_NODES / ALL_CPUS;
+	// make sure the number of nodes per CPU is a power of 2; this might lead to 
+	// some CPU zones having slightly more memory compared to the others
+	nodes_per_cpu = (TOTAL_NODES / ALL_CPUS) >> MAX_ORDER << MAX_ORDER;
+	if (nodes_per_cpu == 0) abort(); // not enough memory has been assigned
 
 	printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
 	// Allocate the memory for all necessary components
@@ -425,7 +430,7 @@ static inline unsigned long cpu_id() {
 	// from a MSR managed by the OS; in Linux the value is interpreted as 
 	// (NUMA_NODE_ID << 12) | (CPU_ID)
 
-	return id % ALL_CPUS; // TODO: fix this ^
+	return id & 0xfffULL; // TODO: fix this ^
 }
 
 // Get the minimum allocation order that satisfies a request of size s
