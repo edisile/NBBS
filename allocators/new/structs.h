@@ -132,7 +132,7 @@
 		.state = INV,
 		.reach = STACK,
 		.stack_len = 0,
-	}; // TODO: is this necessary or is a NULL check enough?
+	};
 
 	#define NULLN ((node *) &NULL_NODE)
 #endif

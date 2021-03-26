@@ -22,7 +22,7 @@ static unsigned long nodes_per_cpu;
 static unsigned char *memory = NULL; // pointer to the memory managed by the buddy system
 static cpu_zone *zones = NULL; // a list of arrays of heads and stacks
 static node *nodes = NULL; // a list of all nodes, one for each page
-// FIXME: find a way to get rid of this
+// FIXME: find a way to get rid of this vvv
 static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
 
 // Some per-thread variables
@@ -64,8 +64,8 @@ static inline int try_lock(lock *l) {
 
 static inline void unlock_lock(lock *l) {
 	assert(l->var == 1);
-	while (!bCAS(&l->var, 1, 0)); // it's not necessary to be atomic
-	// l->var = 0; // lazy lock release
+	// while (!bCAS(&l->var, 1, 0)); // it's not necessary to be atomic
+	l->var = 0; // lazy lock release
 }
 
 static inline void init_lock(lock *l) {
@@ -127,13 +127,7 @@ static int insert_node(node *n) {
 	if (!bCAS(&(NEXT(n)->prev), target, n))
 		goto retry_prev;
 
-	retry_release:
-	old = GET_PACK(n);
-	new = MAKE_PACK_NODE(NEXT(n), UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
-
-	// MAYBE: could this be done in a lazier way? e.g. just n->reach = LIST
-	if (!set_pack_node(n, old, new))
-		goto retry_release;
+	n->reach = LIST;
 	// insertion is done, anyone can remove the node from the list now
 
 	return 1;
@@ -180,14 +174,10 @@ static int remove_node(node *n) {
 	if (!bCAS(&next->prev, n, prev))
 		goto retry_2;
 
-	retry_release: // MAYBE: does this have to be atomic?
-	old = GET_PACK(n);
-
-	assert(UNPACK_REACH(old) == BUSY);
+	assert(n->reach == BUSY);
 	
-	new = MAKE_PACK_NODE(NULLN, UNPACK_ORDER(old), UNPACK_STATE(old), UNLINK);
-	if (!set_pack_node(n, old, new))
-		goto retry_release;
+	n->next = PACK_NEXT(NULLN);
+	n->reach = UNLINK;
 	n->prev = NULLN;
 	
 	return 1;
@@ -224,9 +214,6 @@ static int stack_push(stack *s, node *n) {
 	unsigned long new_head = MAKE_PACK_STACK(s, n);
 	
 	if (!set_pack_stack(s, old_head, new_head)) {
-		// n->next = PACK_NEXT(NULLN);
-		// n->reach = UNLINK;
-		// n->prev = NULLN;
 		goto retry_push;
 	}
 
@@ -313,7 +300,7 @@ static void setup_memory_blocks() {
 }
 
 static void setup_memory_state() {
-	// TODO: split a few MAX_ORDER blocks and put them in the stacks
+	// MAYBE: split a few MAX_ORDER blocks and put them in the stacks
 }
 
 // Initialize the structure of the buddy system
@@ -430,7 +417,7 @@ static inline unsigned long cpu_id() {
 	// from a MSR managed by the OS; in Linux the value is interpreted as 
 	// (NUMA_NODE_ID << 12) | (CPU_ID)
 
-	return id & 0xfffULL; // TODO: fix this ^
+	return id & 0xfffULL; // TODO: fix this ^^^ and take NUMA into account
 }
 
 // Get the minimum allocation order that satisfies a request of size s
@@ -448,8 +435,6 @@ static inline int move_node(node *n) {
 	int ok = 0;
 	unsigned owner = OWNER(n);
 	if (try_lock(&locks[owner])) {
-		// FIXME: this uses locks atm, not very poggers
-		
 		ok = remove_node(n);
 		
 		if (ok) {
@@ -496,8 +481,6 @@ static inline int handle_occ_node(node *n, node **next_node_ptr) {
 	unsigned owner = OWNER(n);
 
 	if (try_lock(&locks[owner])) {
-		// FIXME: this uses locks atm, not very poggers
-		
 		ok = remove_node(n);
 		// remove_node fails if (n->state == FREE || n->reach != LIST)
 
@@ -524,7 +507,6 @@ static node *get_free_node(size_t order, unsigned cpus_limit) {
 	
 	restart:;
 	unsigned cpu = cpu_id();
-	// TODO: ^ this is wrong with more that 1 NUMA node, see the comment in cpu_id
 
 	target_order = order;
 
@@ -646,7 +628,6 @@ static void split_node(node *n, size_t target_order) {
 			// TODO: this path is used a lot and needs 5 bCAS calls to complete; 
 			// make a fast path similar to the one used in _free
 
-			// FIXME: this uses locks atm, not very poggers
 			unsigned long new = MAKE_PACK_NODE(NULLN, buddy_order, 
 					FREE, UNLINK);
 			
@@ -708,7 +689,6 @@ static void *_alloc(size_t size) {
 	// if it is disable preemption and remove it
 	unsigned owner = OWNER(n);
 	if (try_lock(&locks[owner])) {
-		// FIXME: this uses locks atm, not very poggers
 		if (n->reach == LIST) {
 			// the node was taken from the list and is still there
 			remove_node(n);
@@ -790,10 +770,11 @@ static void _free(void *addr) {
 	stack *s = &zones[owner].stacks[n_order];
 
 	assert(n->state == OCC && n->reach != STACK);
-
+	
 	retry_fast:;
-	// fast path: if there's just few elements in the stack push there and 
-	// don't even care about doing any other work
+	// fast path: if there's just few elements in the stack or the order of the 
+	// block is very requested push to the stack and don't even try doing any 
+	// other work
 	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] > HISTORY_LEN / 4) 
 			&& n->reach == UNLINK) {
 
@@ -805,7 +786,6 @@ static void _free(void *addr) {
 	}
 	
 	if (try_lock(&locks[owner])) {
-		// FIXME: this uses locks atm
 		if (n->reach == LIST) {
 			// node might not have been removed before being freed
 			int ok = remove_node(n);
@@ -815,7 +795,6 @@ static void _free(void *addr) {
 		insert_node(n);
 
 		unlock_lock(&locks[owner]);
-
 	} else {
 		int ok = 0;
 		
@@ -831,19 +810,20 @@ static void _free(void *addr) {
 					break;
 				
 				case BUSY:
-					// another thread is currently removing the node from the 
-					// list, just change the state to FREE while the removal is 
-					// taking place
-					// ok = change_state(n, OCC, FREE, BUSY, n->order);
-					// TODO: is this actually correct? Yes. Does it send 
-					// handle_free_node in an infinite loop? Yes.
-					
-					// FIXME: yep, just busy loop
+					// another thread that's looking for a free node is 
+					// currently cleaning and removing the node from the list; 
+					// try to change the state to FREE while the removal is 
+					// taking place:
+					// 1. if this operation is successful the other thread will 
+					// handle n after its removal
+					// 2. if the operation fails this thread will check again
+					ok = change_state(n, OCC, FREE, BUSY, n->order);
 					break;
 				
 				default:
 					// only remaining option is STACK, which shouldn't happen
 					printf("Can't free node with n->reach %p\n", n->reach);
+					abort();
 					break;
 			}
 		}
@@ -899,6 +879,8 @@ void _debug_test_nodes() {
 
 	printf("\tFREE: %lu, %luB\n\tOCC: %lu, %luB\n\tINV: %lu\n", 
 			free_count, free_mem, occ_count, occ_mem, inv_count);
+
+	assert(free_mem + occ_mem == TOTAL_MEMORY);
 
 	printf("Done!\n");
 }
