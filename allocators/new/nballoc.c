@@ -620,31 +620,26 @@ static void split_node(node *n, size_t target_order) {
 		retry_buddy:;
 		unsigned long old = GET_PACK(buddy);
 
-		assert(UNPACK_REACH(old) == UNLINK && UNPACK_STATE(old) == INV);
+		assert(UNPACK_REACH(old) == UNLINK);
+		assert(UNPACK_STATE(old) == INV);
 		
 		int ok = 0;
 
 		if (try_lock(&locks[owner])) {
-			// TODO: this path is used a lot and needs 5 bCAS calls to complete; 
+			// TODO: this path is used a lot and needs 3 bCAS calls to complete; 
 			// make a fast path similar to the one used in _free
 
-			unsigned long new = MAKE_PACK_NODE(NULLN, buddy_order, 
-					FREE, UNLINK);
-			
-			ok = set_pack_node(buddy, old, new); // TODO: can this even fail?
-			if (ok)
-				insert_node(buddy);
+			buddy->order = buddy_order;
+			buddy->state = FREE;
+			ok = insert_node(buddy);
 			
 			unlock_lock(&locks[owner]);
 
 		} else {
 			
-			unsigned long new = MAKE_PACK_NODE(NULLN, buddy_order, 
-					OCC, UNLINK);
-
-			ok = set_pack_node(buddy, old, new); // TODO: can this even fail?
-			if (ok)
-				stack_push(&zones[owner].stacks[buddy_order], buddy);
+			buddy->order = buddy_order;
+			buddy->state = OCC;
+			ok = stack_push(&zones[owner].stacks[buddy_order], buddy);
 
 		}
 
@@ -721,7 +716,7 @@ static node *try_coalescing(node *n) {
 
 	node *buddy = &nodes[BUDDY_INDEX(INDEX(n), order)];
 	// fast path: if the buddy is not free or wrong order just mark n as free
-	if (buddy->state != FREE || buddy->order != order) {
+	if (buddy->state != FREE || buddy->order != order || order == MAX_ORDER) {
 		if (!change_state(n, OCC, FREE, UNLINK, order))
 			goto retry1;
 		
