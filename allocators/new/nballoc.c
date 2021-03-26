@@ -26,9 +26,9 @@ static node *nodes = NULL; // a list of all nodes, one for each page
 static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
 
 // Some per-thread variables
-__thread unsigned alloc_count = 0;
-__thread unsigned char alloc_hist[HISTORY_LEN] = {0}; // the last orders of allocations made by a thread
-__thread unsigned alloc_distr[MAX_ORDER + 1] = {0}; // the number of allocations of each order
+static __thread unsigned alloc_count = 0;
+static __thread unsigned char alloc_hist[HISTORY_LEN] = {0}; // the last orders of allocations made by a thread
+static __thread unsigned alloc_distr[MAX_ORDER + 1] = {0}; // the number of allocations of each order
 
 static inline void estimate_distr() {	
 	for (int i = 0; i <= MAX_ORDER; i++) {
@@ -676,11 +676,11 @@ static void *_alloc(size_t size) {
 	int ok = TRY_TRANSACTION({
 		if (n->reach == LIST) {
 			// the node was taken from the list and is still there
-			remove_node(n)
+			remove_node(n);
 		}
 	})
 	
-	if (ok) goto done
+	if (ok) goto done;
 	#endif
 
 	assert(n->state == OCC);
@@ -784,6 +784,20 @@ static void _free(void *addr) {
 		
 		return;
 	}
+
+	#ifdef TSX
+	int ok = TRY_TRANSACTION({
+		if (n->reach == LIST) {
+			// node might not have been removed before being freed
+			int ok = remove_node(n);
+		}
+		
+		n = try_coalescing(n);
+		insert_node(n);
+	})
+	
+	if (ok) goto done;
+	#endif
 	
 	if (try_lock(&locks[owner])) {
 		if (n->reach == LIST) {
