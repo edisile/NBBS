@@ -668,14 +668,14 @@ static void *_alloc(size_t size) {
 	if (n->reach == UNLINK) goto done;
 
 	#ifdef TSX
-	int ok = TRY_TRANSACTION({
+	int ret = TRY_TRANSACTION({
 		if (n->reach == LIST) {
 			// the node was taken from the list and is still there
 			remove_node(n);
 		}
-	})
+	});
 	
-	if (ok) goto done;
+	if (TRANSACTION_OK(ret)) goto done;
 	#endif
 
 	assert(n->state == OCC);
@@ -781,7 +781,7 @@ static void _free(void *addr) {
 	}
 
 	#ifdef TSX
-	int ok = TRY_TRANSACTION({
+	int ret = TRY_TRANSACTION({
 		if (n->reach == LIST) {
 			// node might not have been removed before being freed
 			int ok = remove_node(n);
@@ -789,9 +789,9 @@ static void _free(void *addr) {
 		
 		n = try_coalescing(n);
 		insert_node(n);
-	})
+	});
 	
-	if (ok) goto done;
+	if (TRANSACTION_OK(ret)) return;
 	#endif
 	
 	if (try_lock(&locks[owner])) {

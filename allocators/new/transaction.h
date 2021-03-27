@@ -8,9 +8,9 @@
 		__VA_ARGS__;								\
 	} while (0)
 
-	#define TRANSACTION_OK(s) (s == _XBEGIN_STARTED)
 	#define IN_TRANSACTION _xtest()
 
+	#define TRANSACTION_OK(s) (s == _XBEGIN_STARTED)
 	#define TRANSACTION_ABORTED(s) (s & 0x1)
 	#define TRANSACTION_RETRY(s) (s & (0x1 << 1))
 	#define TRANSACTION_CONFLICT(s) (s & (0x1 << 2))
