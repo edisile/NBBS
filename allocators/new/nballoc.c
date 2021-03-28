@@ -305,7 +305,7 @@ static void setup_memory_state() {
 
 // Initialize the structure of the buddy system
 __attribute__ ((constructor)) void premain() {
-	printf("initializing buddy system state:\n");
+	// printf("initializing buddy system state:\n");
 	// Get the number of CPUs configured on the system; there might be some 
 	// CPUs that are configured but not available (e.g. shut down to save power)
 	ALL_CPUS = sysconf(_SC_NPROCESSORS_CONF);
@@ -314,7 +314,7 @@ __attribute__ ((constructor)) void premain() {
 	nodes_per_cpu = (TOTAL_NODES / ALL_CPUS) >> MAX_ORDER << MAX_ORDER;
 	if (nodes_per_cpu == 0) abort(); // not enough memory has been assigned
 
-	printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
+	// printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
 	// Allocate the memory for all necessary components
 	memory = aligned_alloc(PAGE_SIZE, TOTAL_MEMORY);
 	nodes = aligned_alloc(PAGE_SIZE, sizeof(node) * TOTAL_NODES);
@@ -334,7 +334,7 @@ __attribute__ ((constructor)) void premain() {
 		abort();
 	}
 
-	printf("\tallocations done\n");
+	// printf("\tallocations done\n");
 
 	// memset(memory, 0, TOTAL_MEMORY); // not necessary
 
@@ -358,12 +358,12 @@ __attribute__ ((constructor)) void premain() {
 		}
 	}
 
-	printf("\tlist heads set up, inserting memory blocks\n");
+	// printf("\tlist heads set up, inserting memory blocks\n");
 
 	setup_memory_blocks();
 	setup_memory_state();
 
-	printf("buddy system is ready\n");
+	// printf("buddy system is ready\n");
 }
 
 // =============================================================================

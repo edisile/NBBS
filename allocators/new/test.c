@@ -5,7 +5,7 @@
 
 #include "nballoc.h"
 
-#define THREADS 16
+#define THREADS 1
 #define ROUNDS 1024
 #define HISTORY 12288
 #define SIZE (1ULL << 12)
@@ -16,7 +16,6 @@ void *thread_job(void *arg) {
 	unsigned long id = (unsigned long) arg;
 	unsigned long fail = 0;
 	void *values[HISTORY];
-	unsigned long tid = gettid();
 
 	// printf("%d is waiting\n", arg);
 	// pthread_barrier_wait(&barrier);
