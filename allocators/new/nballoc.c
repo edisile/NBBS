@@ -87,7 +87,7 @@ static void debug(unsigned long p) {
 static int insert_node(node *n) {
 	retry_acquire:;
 	unsigned cpu = OWNER(n);
-	node *target = &zones[cpu].heads[n->order];
+	node *target = &n->owner_heads[n->order];
 
 	assert(target->state == HEAD);
 	assert(target->reach == LIST);
@@ -276,13 +276,16 @@ static node *stack_clear(stack *s) {
 // Initialize the state of the nodes
 static void setup_memory_blocks() {
 	for (unsigned long i = 0; i < TOTAL_NODES; i++) {
+		unsigned owner = OWNER(&nodes[i]);
 		nodes[i] = (node) {
 			.next = PACK_NEXT(NULLN),
 			.prev = NULLN,
 			.state = INV,
 			.reach = UNLINK,
 			.order = 0,
-			.owner = OWNER(&nodes[i]),
+			.owner = owner,
+			.owner_heads = (node *) &zones[owner].heads,
+			.owner_stacks = (stack *) &zones[owner].stacks,
 		};
 		
 		// Initially only MAX_ORDER-sized blocks are marked as available
@@ -620,7 +623,7 @@ static void split_node(node *n, size_t target_order) {
 		
 		retry_buddy:;
 		unsigned long old = GET_PACK(buddy);
-		stack *s = &zones[owner].stacks[buddy_order];
+		stack *s = &buddy->owner_stacks[buddy_order];
 
 		assert(UNPACK_REACH(old) == UNLINK);
 		assert(UNPACK_STATE(old) == INV);
@@ -760,7 +763,7 @@ static void _free(void *addr) {
 	node *n = &nodes[index];
 	unsigned n_order = n->order;
 	unsigned owner = n->owner;
-	stack *s = &zones[owner].stacks[n_order];
+	stack *s = &n->owner_stacks[n_order];
 
 	assert(n->state == OCC && n->reach != STACK);
 	
@@ -768,7 +771,8 @@ static void _free(void *addr) {
 	// fast path: if there's just few elements in the stack or the order of the 
 	// block is very requested push to the stack and don't even try doing any 
 	// other work
-	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] >= HISTORY_LEN / 4) 
+	// FIXME: make a compiler flag to enable/disable alloc_distr usage
+	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] >= HISTORY_LEN / 4) // TODO: change to exp mov avg
 			&& n->reach == UNLINK) {
 
 		int ok = stack_push(s, n);
