@@ -30,7 +30,7 @@ static __thread unsigned alloc_count = 0;
 static __thread unsigned char alloc_hist[HISTORY_LEN] = {0}; // the last orders of allocations made by a thread
 static __thread unsigned alloc_distr[MAX_ORDER + 1] = {0}; // the number of allocations of each order
 
-static inline void estimate_distr() {	
+static inline void estimate_distr() {
 	for (int i = 0; i <= MAX_ORDER; i++) {
 		alloc_distr[i] = 0;
 	}
@@ -282,6 +282,7 @@ static void setup_memory_blocks() {
 			.state = INV,
 			.reach = UNLINK,
 			.order = 0,
+			.owner = OWNER(&nodes[i]),
 		};
 		
 		// Initially only MAX_ORDER-sized blocks are marked as available
@@ -432,7 +433,7 @@ static inline size_t closest_order(size_t s) {
 
 static inline int move_node(node *n) {
 	int ok = 0;
-	unsigned owner = OWNER(n);
+	unsigned owner = n->owner;
 	if (try_lock(&locks[owner])) {
 		ok = remove_node(n);
 		
@@ -478,7 +479,7 @@ static inline int handle_free_node(node *n, short order, node **next_node_ptr) {
 static inline int handle_occ_node(node *n, node **next_node_ptr) {
 	node *next = NEXT(n);
 	int ok = 0;
-	unsigned owner = OWNER(n);
+	unsigned owner = n->owner;
 
 	if (try_lock(&locks[owner])) {
 		ok = remove_node(n);
@@ -596,7 +597,7 @@ static inline node *get_free_node_fast(size_t order) {
 static void split_node(node *n, size_t target_order) {
 	size_t current_order = n->order;
 	unsigned long n_index = INDEX(n);
-	unsigned owner = OWNER(n);
+	unsigned owner = n->owner;
 
 	// First set the new order of n atomically
 	// TODO: this could be done when occupying the node in get_free_node saving 
@@ -679,7 +680,7 @@ static void *_alloc(size_t size) {
 
 	// fallback path, check if the node is owned by the current executing CPU; 
 	// if it is disable preemption and remove it
-	unsigned owner = OWNER(n);
+	unsigned owner = n->owner;
 	if (try_lock(&locks[owner])) {
 		if (n->reach == LIST) {
 			// the node was taken from the list and is still there
@@ -758,7 +759,7 @@ static void _free(void *addr) {
 	unsigned long index = ((unsigned char *)addr - memory) / MIN_ALLOCABLE_BYTES;
 	node *n = &nodes[index];
 	unsigned n_order = n->order;
-	unsigned owner = OWNER(n);
+	unsigned owner = n->owner;
 	stack *s = &zones[owner].stacks[n_order];
 
 	assert(n->state == OCC && n->reach != STACK);

@@ -42,6 +42,10 @@
 			struct _node *prev; // pointer to previous node, only if .reach != STACK
 			unsigned long stack_len; // number of nodes in the stack, if .reach == STACK
 		};
+
+		unsigned long owner;
+		struct _node *owner_heads;
+		struct _stack *owner_stacks;
 	} node;
 
 	#if MAX_ORDER > 15
@@ -54,7 +58,7 @@
 		volatile unsigned long head: 51; // pointer to next node: <sign ext>head<000000>
 		unsigned long :      1; // padding, just to make hex prints easier to read
 		volatile unsigned long aba:  12; // a counter to resolve ABA problems
-	} __attribute__ ((__packed__)) stack;
+	} __attribute__((__packed__)) stack;
 
 	// An array of nodes that serve as heads for a list, one for each order, 
 	// along with an array of stacks
