@@ -36,3 +36,4 @@ benchmarks/estimate_clock/estimate_clock
 results_*_*_*/
 .vscode/
 kernel-bd-api/Module.symvers
+*.svg

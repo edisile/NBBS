@@ -767,12 +767,15 @@ static void _free(void *addr) {
 
 	assert(n->state == OCC && n->reach != STACK);
 	
+	retry:;
+	#ifdef FAST_FREE
 	retry_fast:;
 	// fast path: if there's just few elements in the stack or the order of the 
 	// block is very requested push to the stack and don't even try doing any 
 	// other work
-	// FIXME: make a compiler flag to enable/disable alloc_distr usage
-	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] >= HISTORY_LEN / 4) // TODO: change to exp mov avg
+
+	// TODO: change heuristic to an exp mov avg
+	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] >= HISTORY_LEN / 4)
 			&& n->reach == UNLINK) {
 
 		int ok = stack_push(s, n);
@@ -781,6 +784,7 @@ static void _free(void *addr) {
 		
 		return;
 	}
+	#endif
 
 	#ifdef TSX
 	int ret = TRY_TRANSACTION({
@@ -802,7 +806,7 @@ static void _free(void *addr) {
 			int ok = remove_node(n);
 
 			if (!ok)
-				goto retry_fast; // should never happen but better be sure
+				goto retry; // should never happen but better be sure
 		}
 		
 		n = try_coalescing(n);
