@@ -77,11 +77,11 @@ static inline void init_lock(lock *l) {
 // =============================================================================
 
 static void debug(unsigned long p) {
-	printf("pack: %p\n", p);
+	printf("pack: %lx\n", p);
 	printf("next : %p ", UNPACK_NEXT(p));
-	printf("state: %p ", UNPACK_STATE(p));
-	printf("order: %p ", UNPACK_ORDER(p));
-	printf("reach: %p\n", UNPACK_REACH(p));
+	printf("state: %llx ", UNPACK_STATE(p));
+	printf("order: %llx ", UNPACK_ORDER(p));
+	printf("reach: %llx\n", UNPACK_REACH(p));
 }
 
 static int insert_node(node *n) {
@@ -291,7 +291,7 @@ static void setup_memory_blocks() {
 		}
 	}
 
-	printf("\tall nodes filled, inserting MAX_ORDER blocks\n");
+	// printf("\tall nodes filled, inserting MAX_ORDER blocks\n");
 
 	// insert the blocks in the buddy system
 	for (unsigned long i = 0; i < TOTAL_NODES; i += (0x1 << MAX_ORDER)) {
@@ -372,7 +372,6 @@ __attribute__ ((constructor)) void premain() {
 
 static inline int change_state(node *n, short old_state, short new_state, 
 		short exp_reach, short exp_order) {
-	int ok = 0;
 	unsigned long old = GET_PACK(n);
 
 	if (UNPACK_STATE(old) != old_state || UNPACK_REACH(old) != exp_reach || 
@@ -443,6 +442,7 @@ static inline int move_node(node *n) {
 
 		unlock_lock(&locks[owner]);
 	}
+	return ok;
 }
 
 // Try to allocate a FREE node, returns 1 if allocation succeeded and 0 
@@ -573,7 +573,7 @@ static node *get_free_node(size_t order, unsigned cpus_limit) {
 			
 			
 			default:
-				fprintf(stderr, "There's a node with a wrong status value:\n\t%p: %p",
+				fprintf(stderr, "There's a node with a wrong status value:\n\t%p: %x",
 					n, n->state);
 				abort();
 		}
@@ -619,16 +619,13 @@ static void split_node(node *n, size_t target_order) {
 		
 		retry_buddy:;
 		unsigned long old = GET_PACK(buddy);
+		stack *s = &zones[owner].stacks[buddy_order];
 
 		assert(UNPACK_REACH(old) == UNLINK);
 		assert(UNPACK_STATE(old) == INV);
 		
 		int ok = 0;
-
 		if (try_lock(&locks[owner])) {
-			// TODO: this path is used a lot and needs 3 bCAS calls to complete; 
-			// make a fast path similar to the one used in _free
-
 			buddy->order = buddy_order;
 			buddy->state = FREE;
 			ok = insert_node(buddy);
@@ -639,7 +636,7 @@ static void split_node(node *n, size_t target_order) {
 			
 			buddy->order = buddy_order;
 			buddy->state = OCC;
-			ok = stack_push(&zones[owner].stacks[buddy_order], buddy);
+			ok = stack_push(s, buddy);
 
 		}
 
@@ -770,7 +767,7 @@ static void _free(void *addr) {
 	// fast path: if there's just few elements in the stack or the order of the 
 	// block is very requested push to the stack and don't even try doing any 
 	// other work
-	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] > HISTORY_LEN / 4) 
+	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] >= HISTORY_LEN / 4) 
 			&& n->reach == UNLINK) {
 
 		int ok = stack_push(s, n);
@@ -798,6 +795,9 @@ static void _free(void *addr) {
 		if (n->reach == LIST) {
 			// node might not have been removed before being freed
 			int ok = remove_node(n);
+
+			if (!ok)
+				goto retry_fast; // should never happen but better be sure
 		}
 		
 		n = try_coalescing(n);
@@ -831,7 +831,7 @@ static void _free(void *addr) {
 				
 				default:
 					// only remaining option is STACK, which shouldn't happen
-					printf("Can't free node with n->reach %p\n", n->reach);
+					printf("Can't free node with n->reach %x\n", n->reach);
 					abort();
 					break;
 			}
@@ -860,12 +860,12 @@ void _debug_test_nodes() {
 		node *n = &nodes[i];
 
 		if (n->state == FREE && n->reach != LIST) {
-			printf("FREE node lost: %p { status = %u, order = %u, cpu = %u, next = %p, prev = %p}\n", 
+			printf("FREE node lost: %p { status = %u, order = %u, cpu = %lu, next = %p, prev = %p}\n", 
 				n, n->state, n->order, OWNER(n), NEXT(n), n->prev);
 		}
 
 		if (n->state == OCC && n->reach != STACK) {
-			printf("OCC node out of stack: %p { status = %u, order = %u, cpu = %u, next = %p, prev = %p}\n", 
+			printf("OCC node out of stack: %p { status = %u, order = %u, cpu = %lu, next = %p, prev = %p}\n", 
 				n, n->state, n->order, OWNER(n), NEXT(n), n->prev);
 		}
 
