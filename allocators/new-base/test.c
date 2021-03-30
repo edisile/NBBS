@@ -59,7 +59,7 @@ int main(int argc, char const *argv[]) {
 
 	pthread_barrier_destroy(&barrier);
 
-	// _debug_test_nodes();
+	_debug_test_nodes();
 	
 	return 0;
 }

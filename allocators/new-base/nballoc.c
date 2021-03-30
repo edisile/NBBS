@@ -890,6 +890,8 @@ static void *cleanup_thread_job(void *arg) {
 			// TODO: this is stupid, suuuuuper heavy and can be optimized
 			node *n = stack_pop(s);
 
+			if (n == NULLN) break;
+			
 			n = try_coalescing(n);
 			insert_node(n);
 		}
