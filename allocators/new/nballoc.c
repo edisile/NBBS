@@ -25,27 +25,19 @@ static node *nodes = NULL; // a list of all nodes, one for each page
 // FIXME: find a way to get rid of this vvv
 static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
 
-// Some per-thread variables
-static __thread unsigned alloc_count = 0;
-static __thread unsigned char alloc_hist[HISTORY_LEN] = {0}; // the last orders of allocations made by a thread
-static __thread unsigned alloc_distr[MAX_ORDER + 1] = {0}; // the number of allocations of each order
+#ifdef FAST_FREE
+static __thread float avg_order = 0; // per-thread average alloc order
 
-static inline void estimate_distr() {
-	for (int i = 0; i <= MAX_ORDER; i++) {
-		alloc_distr[i] = 0;
-	}
-
-	for (int i = 0; i < HISTORY_LEN; i++) {
-		alloc_distr[alloc_hist[i]]++;
-	}
+// The average is computed as a exponential moving average with weights (1/2, 1/2)
+static inline void update_avg(unsigned order) {
+	avg_order *= 0.5;
+	avg_order += 0.5 * order;
 }
 
-static inline void update_hist(node *n) {
-	alloc_hist[alloc_count % HISTORY_LEN] = n->order;
-	alloc_count++;
-
-	if (alloc_count % HISTORY_LEN == 0) estimate_distr();
+static inline int should_fast_free(unsigned order) {
+	return order >= avg_order;
 }
+#endif
 
 #define INDEX(n_ptr) (n_ptr - nodes)
 #define BUDDY_INDEX(idx, order) (idx ^ (0x1 << order))
@@ -697,9 +689,9 @@ static void *_alloc(size_t size) {
 
 	done:
 	#ifdef FAST_FREE
-	if (n != NULLN) update_hist(n);
+	if (n != NULLN) update_avg(order);
 	#endif
-	
+
 	return (void *) (memory + INDEX(n) * MIN_ALLOCABLE_BYTES);
 }
 
@@ -778,7 +770,7 @@ static void _free(void *addr) {
 	// other work
 
 	// TODO: change heuristic to an exp mov avg
-	if ((LEN(s) <= (STACK_THRESH / 2) || alloc_distr[n_order] >= HISTORY_LEN / 4)
+	if ((LEN(s) <= (STACK_THRESH / 2) || should_fast_free(n_order))
 			&& n->reach == UNLINK) {
 
 		int ok = stack_push(s, n);
