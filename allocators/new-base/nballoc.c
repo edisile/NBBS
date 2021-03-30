@@ -24,6 +24,7 @@ static cpu_zone *zones = NULL; // a list of arrays of heads and stacks
 static node *nodes = NULL; // a list of all nodes, one for each page
 // FIXME: find a way to get rid of this vvv
 static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
+static pthread_t *workers;
 
 #ifdef FAST_FREE
 static __thread float avg_order = 0; // per-thread average alloc order
@@ -143,7 +144,7 @@ static int remove_node(node *n) {
 	
 	// if (NEXT(prev) != n) {
 	// 	// there's been an insertion in front of n
-	// 	// TODO: add an assert, this should never happen while removing the node
+	// 	// MAYBE: add an assert, this should never happen while removing the node
 	// 	// unless it's done in a transaction (?)
 	// 	if (!unmark_ptr(&n->next))
 	// 		goto retry_1;
@@ -298,6 +299,8 @@ static void setup_memory_state() {
 	// MAYBE: split a few MAX_ORDER blocks and put them in the stacks
 }
 
+static void *cleanup_thread_job(void *);
+
 // Initialize the structure of the buddy system
 __attribute__ ((constructor)) void premain() {
 	// printf("initializing buddy system state:\n");
@@ -315,16 +318,19 @@ __attribute__ ((constructor)) void premain() {
 	nodes = aligned_alloc(PAGE_SIZE, sizeof(node) * TOTAL_NODES);
 	zones = aligned_alloc(PAGE_SIZE, sizeof(cpu_zone) * ALL_CPUS);
 	locks = malloc(sizeof(lock) * ALL_CPUS);
+	workers = malloc(sizeof(pthread_t) * ALL_CPUS);
 	
 	// Cleanup if any allocation failed
-	if (memory == NULL || nodes == NULL || zones == NULL || locks == NULL) {
+	if (memory == NULL || nodes == NULL || zones == NULL || locks == NULL || 
+			workers == NULL) {
 		if(memory != NULL) free(memory);
 		if(nodes != NULL) free(nodes);
 		if(zones != NULL) free(zones);
-
 		if(locks != NULL) free(locks);
-		fprintf(stderr, "An allocation failed:\n\tmemory: %p\n\tnodes: %p\n\tzones: %p\n\tlocks: %p\n", 
-				memory, nodes, zones, locks);
+		if(workers != NULL) free(workers);
+
+		fprintf(stderr, "An allocation failed:\n\tmemory: %p\n\tnodes: %p\n\tzones: %p\n\tlocks: %p\n\tworkers: %p\n", 
+				memory, nodes, zones, locks, workers);
 
 		abort();
 	}
@@ -336,8 +342,9 @@ __attribute__ ((constructor)) void premain() {
 	// All the structures needed are allocated, time to initialize them
 
 	// First initialize and connect all the heads in the cpu_zones
-	for (int i = 0; i < ALL_CPUS; i++) {
+	for (unsigned long i = 0; i < ALL_CPUS; i++) {
 		init_lock(&locks[i]);
+		pthread_create(&workers[i], NULL, cleanup_thread_job, (void *) i);
 
 		for (int j = 0; j <= MAX_ORDER; j++) {
 
@@ -762,23 +769,13 @@ static void _free(void *addr) {
 	assert(n->state == OCC && n->reach != STACK);
 	
 	retry:;
-	retry_fast:;
 	#ifdef FAST_FREE
+	retry_fast:;
 	// fast path: if there's just few elements in the stack or the order of the 
 	// block is very requested push to the stack and don't even try doing any 
 	// other work
-
 	if ((LEN(s) <= (STACK_THRESH / 2) || should_fast_free(n_order))
 			&& n->reach == UNLINK) {
-
-		int ok = stack_push(s, n);
-		if (!ok)
-			goto retry_fast;
-		
-		return;
-	}
-	#else
-	if (LEN(s) <= (STACK_THRESH / 2) && n->reach == UNLINK) {
 
 		int ok = stack_push(s, n);
 		if (!ok)
@@ -853,6 +850,57 @@ static void _free(void *addr) {
 void bd_xx_free(void *addr) {
 	if ((void *) memory <= addr && addr < (void *) (memory + TOTAL_MEMORY))
 		_free(addr);
+}
+
+// =============================================================================
+// Helper thread job
+// =============================================================================
+
+static void *cleanup_thread_job(void *arg) {
+	unsigned long cpu = (unsigned long) arg;
+	
+	// set CPU affinity for this thread
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(cpu, &cpuset);
+
+	sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+
+	cpu_zone *z = &zones[cpu];
+	lock *l = &locks[cpu];
+	node dummy_heads[MAX_ORDER + 1] = {
+		(node) {
+			.state = HEAD,
+			.reach = LIST,
+		}
+	};
+
+	restart:
+	
+	// TODO: make this a condition wait like (LEN(s) > STACK_THRESH)
+	usleep(100000); // sleep for 0.1s
+
+	// iterate on all stacks and try to pop everything out of them to clean up
+	for (int order = 0; order <= MAX_ORDER; order++) {
+		if (!try_lock(l))
+			break;
+		
+		stack *s = &z->stacks[order];
+
+		while (LEN(s) > 0) {
+			// TODO: this is stupid, suuuuuper heavy and can be optimized
+			node *n = stack_pop(s);
+
+			n = try_coalescing(n);
+			insert_node(n);
+		}
+		
+		unlock_lock(l);
+	}
+
+	goto restart;
+
+	return NULL;
 }
 
 // =============================================================================
