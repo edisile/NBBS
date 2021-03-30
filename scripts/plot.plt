@@ -44,4 +44,4 @@ set grid y
 
 set output './plots/'.tst.'-'.sz.'.eps'
 
-plot for [col=2:4] './dat/'.tst.'/'.tst.'-'.sz.'.dat' u 1:(column(col)/d)  w lp ls col  t columnheader(col)
+plot for [col=2:5] './dat/'.tst.'/'.tst.'-'.sz.'.dat' u 1:(column(col)/d)  w lp ls col  t columnheader(col)

@@ -25,7 +25,7 @@ $(TARGET)-%-nb: $(SRCS) #$(BASE_ALLOCATORS)/$(TARGET)-%-nb/nballoc.o
 
 $(TARGET)-new-%: $(SRCS) #$(BASE_ALLOCATORS)/$(TARGET)-%-nb/nballoc.o
 	@echo compiling for $@
-	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/new-$*) -L$(abspath ../../allocators/new-$*) -lnew-$*  -o $(TARGET)-new-$* -DALLOCATOR=new -D'TO_BE_REPLACED_MALLOC(x)=bd_xx_malloc(x)' -D'TO_BE_REPLACED_FREE(x)=bd_xx_free(x)' -lpthread -D'ALLOCATOR_NAME="new-$*"'
+	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/new-$*) -L$(abspath ../../allocators/new-$*) -lnew-$*  -o $(TARGET)-new-$* -DALLOCATOR=new-$* -D'TO_BE_REPLACED_MALLOC(x)=bd_xx_malloc(x)' -D'TO_BE_REPLACED_FREE(x)=bd_xx_free(x)' -lpthread -D'ALLOCATOR_NAME="new-$*"'
 
 $(TARGET)-kernel-sl:  $(SRCS)
 	@echo compiling for $@

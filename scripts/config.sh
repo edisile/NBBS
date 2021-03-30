@@ -1,8 +1,8 @@
 #!/bin/bash
 
-THREAD_list="1 4 8 16 24 32"		# thread list
+THREAD_list="1 4 8 16"		# thread list
 RUN_list="1 2 3"					# run list
-ALLOC_list="1lvl-nb new"        # kernel-sl # list of allocators
+ALLOC_list="1lvl-nb 4lvl-nb new-base new-opt"        # kernel-sl # list of allocators
 SIZE_list="4096 32768 262144"
 TEST_list="TBTT TBLS TBFS TBCA"
 

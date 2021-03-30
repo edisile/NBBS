@@ -78,7 +78,6 @@ static void debug(unsigned long p) {
 
 static int insert_node(node *n) {
 	retry_acquire:;
-	unsigned cpu = OWNER(n);
 	node *target = &n->owner_heads[n->order];
 
 	assert(target->state == HEAD);
@@ -763,15 +762,23 @@ static void _free(void *addr) {
 	assert(n->state == OCC && n->reach != STACK);
 	
 	retry:;
-	#ifdef FAST_FREE
 	retry_fast:;
+	#ifdef FAST_FREE
 	// fast path: if there's just few elements in the stack or the order of the 
 	// block is very requested push to the stack and don't even try doing any 
 	// other work
 
-	// TODO: change heuristic to an exp mov avg
 	if ((LEN(s) <= (STACK_THRESH / 2) || should_fast_free(n_order))
 			&& n->reach == UNLINK) {
+
+		int ok = stack_push(s, n);
+		if (!ok)
+			goto retry_fast;
+		
+		return;
+	}
+	#else
+	if (LEN(s) <= (STACK_THRESH / 2) && n->reach == UNLINK) {
 
 		int ok = stack_push(s, n);
 		if (!ok)
