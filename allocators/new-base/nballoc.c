@@ -10,6 +10,7 @@
 #include "gcc_wrappers.h"
 #include "nballoc.h"
 #include "structs.h"
+#include "declarations.h"
 
 #ifdef TSX
 	// Support for Intel TSX instructions
@@ -298,8 +299,6 @@ static void setup_memory_blocks() {
 static void setup_memory_state() {
 	// MAYBE: split a few MAX_ORDER blocks and put them in the stacks
 }
-
-static void *cleanup_thread_job(void *);
 
 // Initialize the structure of the buddy system
 __attribute__ ((constructor)) void premain() {
