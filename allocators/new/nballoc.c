@@ -696,7 +696,10 @@ static void *_alloc(size_t size) {
 	}
 
 	done:
+	#ifdef FAST_FREE
 	if (n != NULLN) update_hist(n);
+	#endif
+	
 	return (void *) (memory + INDEX(n) * MIN_ALLOCABLE_BYTES);
 }
 
