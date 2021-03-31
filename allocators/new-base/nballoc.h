@@ -30,10 +30,6 @@
 		#define STACK_THRESH 32ULL // Determines the laziness of the buddy system
 	#endif
 
-	#ifndef HISTORY_LEN
-		#define HISTORY_LEN 128ULL // Determines how fast the allocator reacts to new allocation patterns
-	#endif
-
 	// Number of nodes, one per page
 	#define TOTAL_NODES (1ULL << (NUM_LEVELS - 1))
 	// Amount of memory the buddy system manages

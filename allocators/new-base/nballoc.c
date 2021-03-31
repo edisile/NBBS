@@ -614,7 +614,7 @@ static void split_node(node *n, size_t target_order) {
 	while (buddy_order != target_order) {
 		buddy_order--;
 		// split n in half, validate its second half and insert it into the 
-		// correct list / stack
+		// correct stack
 		unsigned long buddy_index = BUDDY_INDEX(n_index, buddy_order);
 		node *buddy = &nodes[buddy_index];
 		
@@ -625,21 +625,9 @@ static void split_node(node *n, size_t target_order) {
 		assert(UNPACK_REACH(old) == UNLINK);
 		assert(UNPACK_STATE(old) == INV);
 		
-		int ok = 0;
-		if (try_lock(&locks[owner])) {
-			buddy->order = buddy_order;
-			buddy->state = FREE;
-			ok = insert_node(buddy);
-			
-			unlock_lock(&locks[owner]);
-
-		} else {
-			
-			buddy->order = buddy_order;
-			buddy->state = OCC;
-			ok = stack_push(s, buddy);
-
-		}
+		buddy->order = buddy_order;
+		buddy->state = OCC;
+		int ok = stack_push(s, buddy);
 
 		if (!ok)
 			goto retry_buddy;
@@ -867,24 +855,19 @@ static void *cleanup_thread_job(void *arg) {
 
 	cpu_zone *z = &zones[cpu];
 	lock *l = &locks[cpu];
-	node dummy_heads[MAX_ORDER + 1] = {
-		(node) {
-			.state = HEAD,
-			.reach = LIST,
-		}
-	};
 
 	restart:
 	
 	// TODO: make this a condition wait like (LEN(s) > STACK_THRESH)
-	usleep(100000); // sleep for 0.1s
+	usleep(10000); // sleep for 0.01s
 
 	// iterate on all stacks and try to pop everything out of them to clean up
 	for (int order = 0; order <= MAX_ORDER; order++) {
+		stack *s = &z->stacks[order];
+		if (LEN(s) == 0) continue;
+		
 		if (!try_lock(l))
 			break;
-		
-		stack *s = &z->stacks[order];
 
 		while (LEN(s) > 0) {
 			// TODO: this is stupid, suuuuuper heavy and can be optimized
