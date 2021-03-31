@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <assert.h>
 #include <string.h>
+#include <signal.h>
 
 #include "../../utils/utils.h"
 #include "gcc_wrappers.h"
@@ -17,7 +18,7 @@
 	#include "transaction.h"
 #endif
 
-// Some global variables, filled out by init():
+// Some global variables, filled out by premain():
 static unsigned long ALL_CPUS; // number of (configured) CPUs on the system
 static unsigned long nodes_per_cpu;
 static unsigned char *memory = NULL; // pointer to the memory managed by the buddy system
@@ -300,6 +301,8 @@ static void setup_memory_state() {
 	// MAYBE: split a few MAX_ORDER blocks and put them in the stacks
 }
 
+void sigusr1_handler(int signal) { (void) signal; } // do nothing
+
 // Initialize the structure of the buddy system
 __attribute__ ((constructor)) void premain() {
 	// printf("initializing buddy system state:\n");
@@ -310,6 +313,10 @@ __attribute__ ((constructor)) void premain() {
 	// some CPU zones having slightly more memory compared to the others
 	nodes_per_cpu = (TOTAL_NODES / ALL_CPUS) >> MAX_ORDER << MAX_ORDER;
 	if (nodes_per_cpu == 0) abort(); // not enough memory has been assigned
+
+	if (signal(SIGUSR1, sigusr1_handler) == SIG_ERR) {
+		fprintf(stderr, "Couldn't set up a SIGUSR1 handler, shutting down\n");
+	}
 
 	// printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
 	// Allocate the memory for all necessary components
@@ -832,6 +839,12 @@ static void _free(void *addr) {
 			}
 		}
 	}
+
+	if (LEN(s) > STACK_THRESH) {
+		// wake up worker thread for the CPU that owns n if the stack has 
+		// reached its occupation threshold
+		pthread_kill(workers[owner], SIGUSR1);
+	}
 }
 
 void bd_xx_free(void *addr) {
@@ -857,9 +870,11 @@ static void *cleanup_thread_job(void *arg) {
 	lock *l = &locks[cpu];
 
 	restart:
-	
-	// TODO: make this a condition wait like (LEN(s) > STACK_THRESH)
-	usleep(10000); // sleep for 0.01s
+	// sleep for a long time; if the worker wakes up it's either because 
+	// someone sent a SIGUSR1 or because the sleep time ended, either way 
+	// better clean the stacks
+	sleep(60);
+	// printf("%lu woke up to work\n");
 
 	// iterate on all stacks and try to pop everything out of them to clean up
 	for (int order = 0; order <= MAX_ORDER; order++) {
@@ -867,7 +882,7 @@ static void *cleanup_thread_job(void *arg) {
 		if (LEN(s) == 0) continue;
 		
 		if (!try_lock(l))
-			break;
+			break; // there's someone already working on the list, try later
 
 		while (LEN(s) > 0) {
 			// TODO: this is stupid, suuuuuper heavy and can be optimized
