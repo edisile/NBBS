@@ -6,4 +6,6 @@
 	#define mfence __sync_synchronize
 	#define atomic_inc(ptr) (__sync_fetch_and_add(ptr, 1))
 	#define atomic_dec(ptr) (__sync_fetch_and_sub(ptr, 1))
+	#define atomic_add(ptr, val) (__sync_fetch_and_add(ptr, val))
+	#define atomic_sub(ptr, val) (__sync_fetch_and_sub(ptr, val))
 #endif

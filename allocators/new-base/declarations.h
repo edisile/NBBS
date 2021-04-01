@@ -1,4 +1,5 @@
 #ifndef NEW_BUDDY_SYSTEM_FUNCS
+
 	#include "nballoc.h"
 	#include "structs.h"
 
@@ -17,6 +18,7 @@
 	// =========================================================================
 
 	static int insert_node(node *);
+
 	static int remove_node(node *);
 
 	// =========================================================================
@@ -73,5 +75,8 @@
 	// Helper thread job
 	// =========================================================================
 
+	static void clean_cpu_zone(cpu_zone *, lock *); 
+
 	static void *cleanup_thread_job(void *);
+
 #endif

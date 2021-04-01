@@ -840,6 +840,7 @@ static void _free(void *addr) {
 	}
 
 	if (LEN(s) > STACK_THRESH) {
+		// printf("Stack has length %lu, waking up worker %lu\n", LEN(s), owner);
 		// wake up worker thread for the CPU that owns n if the stack has 
 		// reached its occupation threshold
 		pthread_kill(workers[owner], SIGUSR1);
@@ -892,16 +893,15 @@ static void *cleanup_thread_job(void *arg) {
 	cpu_zone *z = &zones[cpu];
 	lock *l = &locks[cpu];
 
-	restart:
-	// sleep for a long time; if the worker wakes up it's either because 
-	// someone sent a SIGUSR1 or because the sleep time ended, either way 
-	// better clean the stacks
-	sleep(60);
-	printf("%lu woke up to work\n", cpu);
+	for ( ; ; ) {
+		// sleep for a long time; if the worker wakes up it's either because 
+		// some other thread sent a SIGUSR1 to require asynchronous cleanup 
+		// for an overfilled stack or because the sleep time ended
+		sleep(60);
 
-	clean_cpu_zone(z, l);
-
-	goto restart;
+		// printf("%lu woke up to work\n", cpu);
+		clean_cpu_zone(z, l);
+	}
 
 	return NULL;
 }

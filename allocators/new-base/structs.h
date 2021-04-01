@@ -43,9 +43,10 @@
 			unsigned long stack_len; // number of nodes in the stack, if .reach == STACK
 		};
 
-		unsigned long owner;
-		struct _node *owner_heads;
-		struct _stack *owner_stacks;
+		// "final" fields, these won't ever change during execution
+		unsigned long owner; // CPU that owns the node, can be deduced from index but it's slow
+		struct _node *owner_heads; // pointer to the array of heads for the owner
+		struct _stack *owner_stacks; // pointer to the array of stacks for the owner
 	} node;
 
 	#if MAX_ORDER > 15
@@ -56,7 +57,7 @@
 	// nodes
 	typedef struct __attribute__((aligned(CACHE_LINE_SIZE))) _stack {
 		volatile unsigned long head: 51; // pointer to next node: <sign ext>head<000000>
-		unsigned long :      1; // padding, just to make hex prints easier to read
+		volatile unsigned long :      1; // padding, just to make hex prints easier to read
 		volatile unsigned long aba:  12; // a counter to resolve ABA problems
 	} __attribute__((__packed__)) stack;
 
@@ -67,7 +68,8 @@
 		stack stacks[MAX_ORDER + 1];
 	} cpu_zone;
 
-	// Yes, we're rolling our own locks
+	// Yes, we're rolling our own locks; nothing fancy just a variable to bCAS 
+	// in order to acquire it
 	typedef struct __attribute__((aligned(CACHE_LINE_SIZE))) _lock {
 		unsigned long var;
 	} lock;
