@@ -486,8 +486,8 @@ static inline int handle_free_node(node *n, short order, node **next_node_ptr) {
 
 	#ifdef DELAY2
 	if (ok) {
-		// we took a node from the list, so we have to update the value of D for 
-		// the current level: D = N - 2S - L, L -= 1 ==> D += 1
+		// we took a node from the list, so we have to update the value of D 
+		// for the current level: D = N - 2S - L, L -= 1 ==> D += 1
 		atomic_add(&n->owner_heads[n_order].D, 1);
 	}
 	#endif
@@ -847,28 +847,14 @@ static void _free(void *addr) {
 		
 		n = try_coalescing(n);
 
+		insert_node(n);
+		
 		#ifdef DELAY2
-		// TODO: refactor, this is horrible
 		unsigned n_order = n->order;
 		node *head = &n->owner_heads[n_order];
-
-		if (head->D >= 2) {
-			n->state = OCC; // nodes in the stack are marked OCC
-			int ok = stack_push(s, n);
-			if (!ok)
-				goto retry;
-			
-			// we freed a node to a stack, update D:
-			// D = N - 2S - L, S += 1 ==> D -= 2
-			atomic_sub(&head->D, 2);
-		} else {
-			insert_node(n);
-			// we freed a node to the list, update D:
-			// D = N - 2S - L, L += 1 ==> D -= 1
-			atomic_sub(&head->D, 1);
-		}
-		#else
-		insert_node(n);
+		// we freed a node to the list, update D:
+		// D = N - 2S - L, L += 1 ==> D -= 1
+		atomic_sub(&head->D, 1);
 		#endif
 
 		unlock_lock(&locks[owner]);
@@ -994,29 +980,14 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 			
 			n = try_coalescing(n);
 
+			insert_node(n);
+			
 			#ifdef DELAY2
-			// TODO: refactor, this is horrible
 			unsigned n_order = n->order;
 			node *head = &n->owner_heads[n_order];
-			retry:
-			if (head->D >= 2) {
-				n->state = OCC; // nodes in the stack are marked OCC
-				int ok = stack_push(s, n);
-				if (!ok)
-					goto retry;
-				
-				// we freed a node to a stack, update D:
-				// D = N - 2S - L, S += 1 ==> D -= 2
-				atomic_sub(&head->D, 2);
-			} else {
-				n->state = FREE; // nodes in the list are marked FREE
-				insert_node(n);
-				// we freed a node to the list, update D:
-				// D = N - 2S - L, L += 1 ==> D -= 1
-				atomic_sub(&head->D, 1);
-			}
-			#else
-			insert_node(n);
+			// we freed a node to the list, update D:
+			// D = N - 2S - L, L += 1 ==> D -= 1
+			atomic_sub(&head->D, 1);
 			#endif
 		}
 		
@@ -1101,7 +1072,7 @@ void _debug_test_nodes() {
 	for (unsigned long i = 0; i < ALL_CPUS; i++) {
 		printf("CPU %lu: ", i);
 		for (unsigned long j = 0; j <= MAX_ORDER; j++) {
-			printf("(%lu, %ld), ", j, zones[i].heads[j].D);
+			printf("(%lu, %3ld), ", j, zones[i].heads[j].D);
 		}
 		printf("\n");
 	}
