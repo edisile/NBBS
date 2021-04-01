@@ -7,7 +7,7 @@
 
 #define THREADS 1
 #define ROUNDS 1024
-#define HISTORY 12288
+#define HISTORY 1024
 #define SIZE (1ULL << 12)
 
 pthread_barrier_t barrier;
@@ -59,6 +59,10 @@ int main(int argc, char const *argv[]) {
 
 	pthread_barrier_destroy(&barrier);
 
+	_debug_test_nodes();
+	sleep(2);
+	_debug_test_nodes();
+	sleep(2);
 	_debug_test_nodes();
 	
 	return 0;

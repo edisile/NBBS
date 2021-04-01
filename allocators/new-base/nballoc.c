@@ -362,6 +362,12 @@ __attribute__ ((constructor)) void premain() {
 				.prev = &zones[(i + ALL_CPUS - 1) % ALL_CPUS].heads[j],
 			};
 
+			#ifdef DELAY2
+			// for all heads the initial D is 0 since all nodes are going to be 
+			// inserted in the list (D = N -2S - L, and initially N == L)
+			zones[i].heads[j].D = 0;
+			#endif
+
 			stack_init(&zones[i].stacks[j]);
 		}
 	}
@@ -478,6 +484,14 @@ static inline int handle_free_node(node *n, short order, node **next_node_ptr) {
 		move_node(n);
 	}
 
+	#ifdef DELAY2
+	if (ok) {
+		// we took a node from the list, so we have to update the value of D for 
+		// the current level: D = N - 2S - L, L -= 1 ==> D += 1
+		atomic_add(&n->owner_heads[n_order].D, 1);
+	}
+	#endif
+
 	return ok;
 }
 
@@ -495,8 +509,8 @@ static inline int handle_occ_node(node *n, node **next_node_ptr) {
 		unlock_lock(&locks[owner]);
 	}
 
-	// check if remove_node failed and/or there's been a concurrent free the 
-	// current thread should check this node again
+	// check if remove_node failed because of a concurrent free; in this case 
+	// the current thread should check this node again
 	if (!ok && n->state == FREE)
 		*next_node_ptr = n;
 	else
@@ -542,6 +556,12 @@ static node *get_free_node(size_t order, unsigned cpus_limit) {
 
 						assert(n->state == OCC && n->reach == UNLINK && 
 								n->prev == NULLN && NEXT(n) == NULLN);
+						
+						#ifdef DELAY2
+						// we took a node from the stack, update the value of D
+						// D = N - 2S - L, S -= 1 ==> D += 2
+						atomic_add(&n->owner_heads[target_order].D, 2);
+						#endif
 						
 						goto done;
 					}
@@ -634,6 +654,11 @@ static void split_node(node *n, size_t target_order) {
 		buddy->order = buddy_order;
 		buddy->state = OCC;
 		int ok = stack_push(s, buddy);
+
+		#ifdef DELAY2
+		// no need to update D here:
+		// D = N - 2S - L, N += 2 and S += 1 ==> D += 0
+		#endif
 
 		if (!ok)
 			goto retry_buddy;
@@ -735,6 +760,13 @@ static node *try_coalescing(node *n) {
 		
 		if (ok) {
 			// both buddies are marked as INV and have been logically merged
+
+			#ifdef DELAY2
+			// we merged two nodes at this order and removed one from the list
+			// D = N - 2S - L, N -= 2 and L -= 1 ==> D -= 1
+			atomic_sub(&n->owner_heads[order].D, 1);
+			#endif
+
 			remove_node(buddy);
 			
 			// the leftmost buddy is the one that "absorbs" the other
@@ -763,17 +795,29 @@ static void _free(void *addr) {
 	
 	retry:;
 	#ifdef FAST_FREE
-	retry_fast:;
-	// fast path: if there's just few elements in the stack or the order of the 
-	// block is very requested push to the stack and don't even try doing any 
-	// other work
-	if ((LEN(s) <= (STACK_THRESH / 2) || should_fast_free(n_order))
-			&& n->reach == UNLINK) {
-
+	// fast path: if the order of the block is often requested push to the 
+	// stack and don't even try doing any other work
+	if (should_fast_free(n_order) && n->reach == UNLINK) {
 		int ok = stack_push(s, n);
 		if (!ok)
-			goto retry_fast;
+			goto retry;
 		
+		return;
+	}
+	#endif
+
+	#ifdef DELAY2
+	node *head = &n->owner_heads[n_order];
+	if (head->D >= 2 && n->reach == UNLINK) {
+		int ok = stack_push(s, n);
+		if (!ok)
+			goto retry;
+		
+		// we freed a node to a stack, update D:
+		// D = N - 2S - L, S += 1 ==> D -= 2
+		// printf("Pushed to stack, %ld\n", head->D);
+		atomic_sub(&head->D, 2);
+
 		return;
 	}
 	#endif
@@ -802,7 +846,30 @@ static void _free(void *addr) {
 		}
 		
 		n = try_coalescing(n);
+
+		#ifdef DELAY2
+		// TODO: refactor, this is horrible
+		unsigned n_order = n->order;
+		node *head = &n->owner_heads[n_order];
+
+		if (head->D >= 2) {
+			n->state = OCC; // nodes in the stack are marked OCC
+			int ok = stack_push(s, n);
+			if (!ok)
+				goto retry;
+			
+			// we freed a node to a stack, update D:
+			// D = N - 2S - L, S += 1 ==> D -= 2
+			atomic_sub(&head->D, 2);
+		} else {
+			insert_node(n);
+			// we freed a node to the list, update D:
+			// D = N - 2S - L, L += 1 ==> D -= 1
+			atomic_sub(&head->D, 1);
+		}
+		#else
 		insert_node(n);
+		#endif
 
 		unlock_lock(&locks[owner]);
 	} else {
@@ -813,10 +880,28 @@ static void _free(void *addr) {
 				case LIST:
 					// node is still in the list as it wasn't removed, just mark as free
 					ok = change_state(n, OCC, FREE, LIST, n->order);
+
+					#ifdef DELAY2
+					if (ok) {
+						// we freed a node in a list, update D:
+						// D = N - 2S - L, L += 1 ==> D -= 1
+						atomic_sub(&head->D, 1);
+					}
+					#endif
+
 					break;
 				
 				case UNLINK:
 					ok = stack_push(s, n);
+
+					#ifdef DELAY2
+					if (ok) {
+						// we freed a node to a stack, update D:
+						// D = N - 2S - L, S += 1 ==> D -= 2
+						atomic_sub(&head->D, 2);
+					}
+					#endif
+
 					break;
 				
 				case BUSY:
@@ -828,6 +913,15 @@ static void _free(void *addr) {
 					// handle n after its removal
 					// 2. if the operation fails this thread will check again
 					ok = change_state(n, OCC, FREE, BUSY, n->order);
+					
+					#ifdef DELAY2
+					if (ok) {
+						// we freed a node in a list, update D:
+						// D = N - 2S - L, L += 1 ==> D -= 1
+						atomic_sub(&head->D, 1);
+					}
+					#endif
+					
 					break;
 				
 				default:
@@ -838,6 +932,19 @@ static void _free(void *addr) {
 			}
 		}
 	}
+
+	#ifdef DELAY2
+	if (head->D < 0) {
+		// Since D = N - 2S - L and N >= S + L, D < 0 ==> there's at least 
+		// N/2 + 1 free nodes at the current level, so at least 2 of them can 
+		// be coalesced
+		// printf("D = %ld\n", head->D);
+
+		// pthread_kill(workers[owner], SIGUSR1); // TODO: find an alternative
+	}
+
+	return;
+	#endif
 
 	if (LEN(s) > STACK_THRESH) {
 		// printf("Stack has length %lu, waking up worker %lu\n", LEN(s), owner);
@@ -860,6 +967,13 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 	// iterate on all stacks and try to pop everything out of them to clean up
 
 	for (int order = 0; order <= MAX_ORDER; order++) {
+		#ifdef DELAY2
+		if (z->heads[order].D >= 0) {
+			// printf("D = %ld\n", z->heads[order].D);
+			continue;
+		}
+		#endif
+		
 		stack *s = &z->stacks[order];
 		if (LEN(s) == 0) continue;
 		
@@ -871,9 +985,39 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 			node *n = stack_pop(s);
 
 			if (n == NULLN) break;
+
+			#ifdef DELAY2
+			// we took a node from the stack, update the value of D
+			// D = N - 2S - L, S -= 1 ==> D += 2
+			atomic_add(&n->owner_heads[order].D, 2);
+			#endif
 			
 			n = try_coalescing(n);
+
+			#ifdef DELAY2
+			// TODO: refactor, this is horrible
+			unsigned n_order = n->order;
+			node *head = &n->owner_heads[n_order];
+			retry:
+			if (head->D >= 2) {
+				n->state = OCC; // nodes in the stack are marked OCC
+				int ok = stack_push(s, n);
+				if (!ok)
+					goto retry;
+				
+				// we freed a node to a stack, update D:
+				// D = N - 2S - L, S += 1 ==> D -= 2
+				atomic_sub(&head->D, 2);
+			} else {
+				n->state = FREE; // nodes in the list are marked FREE
+				insert_node(n);
+				// we freed a node to the list, update D:
+				// D = N - 2S - L, L += 1 ==> D -= 1
+				atomic_sub(&head->D, 1);
+			}
+			#else
 			insert_node(n);
+			#endif
 		}
 		
 		unlock_lock(l);
@@ -897,7 +1041,7 @@ static void *cleanup_thread_job(void *arg) {
 		// sleep for a long time; if the worker wakes up it's either because 
 		// some other thread sent a SIGUSR1 to require asynchronous cleanup 
 		// for an overfilled stack or because the sleep time ended
-		sleep(60);
+		usleep(10000);
 
 		// printf("%lu woke up to work\n", cpu);
 		clean_cpu_zone(z, l);
@@ -952,6 +1096,16 @@ void _debug_test_nodes() {
 			free_count, free_mem, occ_count, occ_mem, inv_count);
 
 	assert(free_mem + occ_mem == TOTAL_MEMORY);
+
+	#ifdef DELAY2
+	for (unsigned long i = 0; i < ALL_CPUS; i++) {
+		printf("CPU %lu: ", i);
+		for (unsigned long j = 0; j <= MAX_ORDER; j++) {
+			printf("(%lu, %ld), ", j, zones[i].heads[j].D);
+		}
+		printf("\n");
+	}
+	#endif
 
 	printf("Done!\n");
 }

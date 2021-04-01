@@ -43,6 +43,19 @@
 			unsigned long stack_len; // number of nodes in the stack, if .reach == STACK
 		};
 
+		#ifdef DELAY2
+			// fields needed for implementing Barkley and Lee's DELAY-2 buddy 
+			// system algorithm; just one slack variable per level is needed 
+			// and is only used by the HEAD nodes
+			volatile long D;
+
+			// D = N -2S - L, where N is the number of existing nodes at the 
+			// current order (split nodes are also counted!), S is the number 
+			// of nodes in the stack and L is the number of nodes in the list; 
+			// by updating D operation after operation, knowing the real value 
+			// of N, S and L is redundant
+		#endif
+
 		// "final" fields, these won't ever change during execution
 		unsigned long owner; // CPU that owns the node, can be deduced from index but it's slow
 		struct _node *owner_heads; // pointer to the array of heads for the owner
