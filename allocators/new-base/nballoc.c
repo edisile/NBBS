@@ -604,7 +604,6 @@ static inline node *get_free_node_fast(size_t order) {
 static void split_node(node *n, size_t target_order) {
 	size_t current_order = n->order;
 	unsigned long n_index = INDEX(n);
-	unsigned owner = n->owner;
 
 	// First set the new order of n atomically
 	// TODO: this could be done when occupying the node in get_free_node saving 
@@ -856,27 +855,9 @@ void bd_xx_free(void *addr) {
 // Helper thread job
 // =============================================================================
 
-static void *cleanup_thread_job(void *arg) {
-	unsigned long cpu = (unsigned long) arg;
-	
-	// set CPU affinity for this thread
-	cpu_set_t cpuset;
-	CPU_ZERO(&cpuset);
-	CPU_SET(cpu, &cpuset);
-
-	sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
-
-	cpu_zone *z = &zones[cpu];
-	lock *l = &locks[cpu];
-
-	restart:
-	// sleep for a long time; if the worker wakes up it's either because 
-	// someone sent a SIGUSR1 or because the sleep time ended, either way 
-	// better clean the stacks
-	sleep(60);
-	// printf("%lu woke up to work\n");
-
+static void clean_cpu_zone(cpu_zone *z, lock *l) {
 	// iterate on all stacks and try to pop everything out of them to clean up
+
 	for (int order = 0; order <= MAX_ORDER; order++) {
 		stack *s = &z->stacks[order];
 		if (LEN(s) == 0) continue;
@@ -896,6 +877,29 @@ static void *cleanup_thread_job(void *arg) {
 		
 		unlock_lock(l);
 	}
+}
+
+static void *cleanup_thread_job(void *arg) {
+	unsigned long cpu = (unsigned long) arg;
+	
+	// set CPU affinity for this thread
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(cpu, &cpuset);
+
+	sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+
+	cpu_zone *z = &zones[cpu];
+	lock *l = &locks[cpu];
+
+	restart:
+	// sleep for a long time; if the worker wakes up it's either because 
+	// someone sent a SIGUSR1 or because the sleep time ended, either way 
+	// better clean the stacks
+	sleep(60);
+	printf("%lu woke up to work\n", cpu);
+
+	clean_cpu_zone(z, l);
 
 	goto restart;
 
