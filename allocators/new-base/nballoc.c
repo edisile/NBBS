@@ -27,8 +27,7 @@ static node *nodes = NULL; // a list of all nodes, one for each page
 // FIXME: find a way to get rid of this vvv
 static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
 static pthread_t *workers;
-
-static unsigned long cleanup_requested[128] = {0}; // TODO: allocate dynamically
+static cond_var *cleanup_requested;
 
 #ifdef FAST_FREE
 static __thread float avg_order = 0; // per-thread average alloc order
@@ -299,10 +298,6 @@ static void setup_memory_blocks() {
 	}
 }
 
-static void setup_memory_state() {
-	// MAYBE: split a few MAX_ORDER blocks and put them in the stacks
-}
-
 void sigusr1_handler(int signal) { (void) signal; } // do nothing
 
 // Initialize the structure of the buddy system
@@ -327,18 +322,20 @@ __attribute__ ((constructor)) void premain() {
 	zones = aligned_alloc(PAGE_SIZE, sizeof(cpu_zone) * ALL_CPUS);
 	locks = malloc(sizeof(lock) * ALL_CPUS);
 	workers = malloc(sizeof(pthread_t) * ALL_CPUS);
+	cleanup_requested = aligned_alloc(CACHE_LINE_SIZE, sizeof(cond_var) * ALL_CPUS);
 	
 	// Cleanup if any allocation failed
 	if (memory == NULL || nodes == NULL || zones == NULL || locks == NULL || 
-			workers == NULL) {
+			workers == NULL || cleanup_requested == NULL) {
 		if(memory != NULL) free(memory);
 		if(nodes != NULL) free(nodes);
 		if(zones != NULL) free(zones);
 		if(locks != NULL) free(locks);
 		if(workers != NULL) free(workers);
+		if(cleanup_requested != NULL) free(cleanup_requested);
 
-		fprintf(stderr, "An allocation failed:\n\tmemory: %p\n\tnodes: %p\n\tzones: %p\n\tlocks: %p\n\tworkers: %p\n", 
-				memory, nodes, zones, locks, workers);
+		fprintf(stderr, "An allocation failed:\n\tmemory: %p\n\tnodes: %p\n\tzones: %p\n\tlocks: %p\n\tworkers: %p\n\tcleanup_requested: %p\n", 
+				memory, nodes, zones, locks, workers, cleanup_requested);
 
 		abort();
 	}
@@ -378,7 +375,6 @@ __attribute__ ((constructor)) void premain() {
 	// printf("\tlist heads set up, inserting memory blocks\n");
 
 	setup_memory_blocks();
-	setup_memory_state();
 
 	// printf("buddy system is ready\n");
 }
@@ -988,7 +984,10 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 		#endif
 
 		while (WAIT_CONDITION) {
-			// TODO: this is stupid, suuuuuper heavy and can be optimized
+			// popping one element at the time is pretty wasteful but promotes
+			// reuse of the memory in the stack; clearing all elements at once 
+			// is possible and would be faster but might lead to more splitting 
+			// and in turn more work for the cleaning thread
 			node *n = stack_pop(s);
 
 			if (n == NULLN) break;
@@ -1033,8 +1032,12 @@ static void *cleanup_thread_job(void *arg) {
 	lock *l = &locks[cpu];
 
 	for ( ; ; ) {
-		while (!cleanup_requested[cpu])
-			usleep(10000); // TODO find a better way
+		while (!cleanup_requested[cpu]) {
+			usleep(10000);
+			// FIXME: this is so unbelievably filthy, yet it's 2 orders of 
+			// magniture faster than using pthread_cond_wait/signal or 
+			// sleep+pthread_kill; there must be some better way to do this
+		}
 
 		// printf("%lu woke up to work\n", cpu);
 		clean_cpu_zone(z, l);

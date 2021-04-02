@@ -87,6 +87,8 @@
 		unsigned long var;
 	} lock;
 
+	typedef unsigned long cond_var __attribute__((aligned(CACHE_LINE_SIZE)));
+
 	// =========================================================================
 	// Macros
 	// =========================================================================
