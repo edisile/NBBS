@@ -28,6 +28,8 @@ static node *nodes = NULL; // a list of all nodes, one for each page
 static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
 static pthread_t *workers;
 
+static unsigned long cleanup_requested[128] = {0}; // TODO: allocate dynamically
+
 #ifdef FAST_FREE
 static __thread float avg_order = 0; // per-thread average alloc order
 
@@ -360,6 +362,7 @@ __attribute__ ((constructor)) void premain() {
 				.state = HEAD,
 				.reach = LIST,
 				.prev = &zones[(i + ALL_CPUS - 1) % ALL_CPUS].heads[j],
+				.owner = i,
 			};
 
 			#ifdef DELAY2
@@ -926,7 +929,9 @@ static void _free(void *addr) {
 		// be coalesced
 		// printf("D = %ld\n", head->D);
 
-		// pthread_kill(workers[owner], SIGUSR1); // TODO: find an alternative
+		if (!cleanup_requested[owner]) {
+			bCAS(&cleanup_requested[owner], 0, 1); // best effort, if it fails it fails
+		}
 	}
 
 	return;
@@ -936,7 +941,10 @@ static void _free(void *addr) {
 		// printf("Stack has length %lu, waking up worker %lu\n", LEN(s), owner);
 		// wake up worker thread for the CPU that owns n if the stack has 
 		// reached its occupation threshold
-		pthread_kill(workers[owner], SIGUSR1);
+
+		if (!cleanup_requested[owner]) {
+			bCAS(&cleanup_requested[owner], 0, 1); // best effort, if it fails it fails
+		}
 	}
 }
 
@@ -966,7 +974,12 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 		if (!try_lock(l))
 			break; // there's someone already working on the list, try later
 
-		while (LEN(s) > 0) {
+		#ifdef DELAY2
+		while (z->heads[order].D >= 0)
+		#else
+		while (LEN(s) > 0)
+		#endif
+		{
 			// TODO: this is stupid, suuuuuper heavy and can be optimized
 			node *n = stack_pop(s);
 
@@ -1003,19 +1016,22 @@ static void *cleanup_thread_job(void *arg) {
 	CPU_ZERO(&cpuset);
 	CPU_SET(cpu, &cpuset);
 
-	sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+	if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) != 0) {
+		fprintf(stderr, "Couldn't pin worker thread to CPU\n");
+		abort();
+	}
 
 	cpu_zone *z = &zones[cpu];
 	lock *l = &locks[cpu];
 
 	for ( ; ; ) {
-		// sleep for a long time; if the worker wakes up it's either because 
-		// some other thread sent a SIGUSR1 to require asynchronous cleanup 
-		// for an overfilled stack or because the sleep time ended
-		usleep(10000);
+		while (!cleanup_requested[cpu])
+			usleep(10000); // TODO find a better way
 
 		// printf("%lu woke up to work\n", cpu);
 		clean_cpu_zone(z, l);
+
+		cleanup_requested[cpu] = 0;
 	}
 
 	return NULL;
