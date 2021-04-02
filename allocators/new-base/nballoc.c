@@ -805,6 +805,13 @@ static void _free(void *addr) {
 		if (!ok)
 			goto retry;
 		
+		#ifdef DELAY2
+		// we freed a node to a stack, update D:
+		// D = N - 2S - L, S += 1 ==> D -= 2
+
+		atomic_sub(&n->owner_heads[n_order].D, 2);
+		#endif
+		
 		return;
 	}
 	#endif
@@ -818,7 +825,7 @@ static void _free(void *addr) {
 		
 		// we freed a node to a stack, update D:
 		// D = N - 2S - L, S += 1 ==> D -= 2
-		// printf("Pushed to stack, %ld\n", head->D);
+		
 		atomic_sub(&head->D, 2);
 
 		return;
@@ -975,11 +982,12 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 			break; // there's someone already working on the list, try later
 
 		#ifdef DELAY2
-		while (z->heads[order].D >= 0)
+		#define WAIT_CONDITION (z->heads[order].D >= 0)
 		#else
-		while (LEN(s) > 0)
+		#define WAIT_CONDITION (LEN(s) > 0)
 		#endif
-		{
+
+		while (WAIT_CONDITION) {
 			// TODO: this is stupid, suuuuuper heavy and can be optimized
 			node *n = stack_pop(s);
 
