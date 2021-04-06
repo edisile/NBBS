@@ -792,11 +792,23 @@ static void _free(void *addr) {
 
 	assert(n->state == OCC && n->reach != STACK);
 	
+	#if defined(FAST_FREE) && defined(DELAY2)
+	#define FAST_RELEASE_CONDITION ((head->D > 0 || should_fast_free(n_order) || LEN(s) <= (STACK_THRESH / 2)) && n->reach == UNLINK)
+	#elif defined(FAST_FREE)
+	#define FAST_RELEASE_CONDITION ((LEN(s) <= (STACK_THRESH / 2) || should_fast_free(n_order)) && n->reach == UNLINK)
+	#elif defined(DELAY2)
+	#define FAST_RELEASE_CONDITION (head->D > 0 && n->reach == UNLINK)
+	#endif
+
 	retry:;
-	#ifdef FAST_FREE
-	// fast path: if the order of the block is often requested push to the 
-	// stack and don't even try doing any other work
-	if (should_fast_free(n_order) && n->reach == UNLINK) {
+	#if defined(FAST_FREE) || defined(DELAY2)
+	#ifdef DELAY2
+	node *head = &n->owner_heads[n_order];
+	#endif
+
+	// fast path: if the order of the block is often requested or there's space 
+	// in the stack push it there and don't even try doing any other work
+	if (FAST_RELEASE_CONDITION) {
 		int ok = stack_push(s, n);
 		if (!ok)
 			goto retry;
@@ -808,22 +820,6 @@ static void _free(void *addr) {
 		atomic_sub(&n->owner_heads[n_order].D, 2);
 		#endif
 		
-		return;
-	}
-	#endif
-
-	#ifdef DELAY2
-	node *head = &n->owner_heads[n_order];
-	if (head->D >= 2 && n->reach == UNLINK) {
-		int ok = stack_push(s, n);
-		if (!ok)
-			goto retry;
-		
-		// we freed a node to a stack, update D:
-		// D = N - 2S - L, S += 1 ==> D -= 2
-		
-		atomic_sub(&head->D, 2);
-
 		return;
 	}
 	#endif
@@ -856,8 +852,8 @@ static void _free(void *addr) {
 		insert_node(n);
 		
 		#ifdef DELAY2
-		unsigned n_order = n->order;
-		node *head = &n->owner_heads[n_order];
+		n_order = n->order;
+		head = &n->owner_heads[n_order];
 		// we freed a node to the list, update D:
 		// D = N - 2S - L, L += 1 ==> D -= 1
 		atomic_sub(&head->D, 1);
@@ -928,20 +924,16 @@ static void _free(void *addr) {
 	#ifdef DELAY2
 	if (head->D < 0) {
 		// Since D = N - 2S - L and N >= S + L, D < 0 ==> there's at least 
-		// N/2 + 1 free nodes at the current level, so at least 2 of them can 
-		// be coalesced
+		// N/2 + 1 free nodes at the current level, so at least a pair of 
+		// buddies can be coalesced
 		// printf("D = %ld\n", head->D);
 
 		if (!cleanup_requested[owner]) {
 			bCAS(&cleanup_requested[owner], 0, 1); // best effort, if it fails it fails
 		}
 	}
-
-	return;
-	#endif
-
+	#else
 	if (LEN(s) > STACK_THRESH) {
-		// printf("Stack has length %lu, waking up worker %lu\n", LEN(s), owner);
 		// wake up worker thread for the CPU that owns n if the stack has 
 		// reached its occupation threshold
 
@@ -949,6 +941,7 @@ static void _free(void *addr) {
 			bCAS(&cleanup_requested[owner], 0, 1); // best effort, if it fails it fails
 		}
 	}
+	#endif
 }
 
 void bd_xx_free(void *addr) {
@@ -978,12 +971,12 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 			break; // there's someone already working on the list, try later
 
 		#ifdef DELAY2
-		#define WAIT_CONDITION (z->heads[order].D >= 0)
+		#define CONTINUE_CONDITION (z->heads[order].D >= 0)
 		#else
-		#define WAIT_CONDITION (LEN(s) > 0)
+		#define CONTINUE_CONDITION (LEN(s) > 0)
 		#endif
 
-		while (WAIT_CONDITION) {
+		while (CONTINUE_CONDITION) {
 			// popping one element at the time is pretty wasteful but promotes
 			// reuse of the memory in the stack; clearing all elements at once 
 			// is possible and would be faster but might lead to more splitting 
