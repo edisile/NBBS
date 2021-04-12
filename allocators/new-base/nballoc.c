@@ -118,15 +118,15 @@ static int insert_node(node *n) {
 	// n->reach was set as BUSY before n was visible in the list so it would be 
 	// impossible to remove it
 	
-	retry_prev: // MAYBE: this doesn't need to be atomic
-	if (!bCAS(&(NEXT(n)->prev), target, n))
-		goto retry_prev;
+	// no need for atomics when updating prev pointers, as no more than one 
+	// thread at a time uses them; updates will get flushed when executing the 
+	//CAS below
+	NEXT(n)->prev = n;
 
-	retry_release:
+	retry_release:;
 	old = GET_PACK(n);
 	new = MAKE_PACK_NODE(NEXT(n), UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
 
-	// MAYBE: could this be done in a lazier way? e.g. just n->reach = LIST
 	if (!set_pack_node(n, old, new))
 		goto retry_release;
 	// insertion is done, anyone can remove the node from the list now
@@ -138,7 +138,7 @@ static int remove_node(node *n) {
 	// first try to mark n->next, if it's marked already leave and return false
 	retry_acquire:;
 	unsigned long old = GET_PACK(n);
-	node *next = UNPACK_NEXT(old);
+	node *next_n = UNPACK_NEXT(old);
 	if (UNPACK_REACH(old) != LIST || UNPACK_STATE(old) == FREE)
 		return 0; // someone else is removing or has removed the node
 	
@@ -148,34 +148,32 @@ static int remove_node(node *n) {
 	if (!set_pack_node(n, old, new))
 		goto retry_acquire;
 
-	retry_1: ;
-	node *prev = n->prev;
+	retry_next:;
+	node *prev_n = n->prev;
 	
 	// if (NEXT(prev) != n) {
 	// 	// there's been an insertion in front of n
 	// 	// MAYBE: add an assert, this should never happen while removing the node
 	// 	// unless it's done in a transaction (?)
-	// 	if (!unmark_ptr(&n->next))
-	// 		goto retry_1;
-
 	// 	return;
 	// }
 
-	old = GET_PACK(prev);
+	old = GET_PACK(prev_n);
 	assert(UNPACK_NEXT(old) == n);
 	assert(UNPACK_REACH(old) == LIST);
 
-	new = MAKE_PACK_NODE(next, UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
+	new = MAKE_PACK_NODE(next_n, UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
 
-	if (!set_pack_node(prev, old, new)) {
-		goto retry_1;
+	if (!set_pack_node(prev_n, old, new)) {
+		goto retry_next;
 	}
 
-	retry_2: // MAYBE: this doesn't need to be atomic
-	if (!bCAS(&next->prev, n, prev))
-		goto retry_2;
+	// no need for atomics when updating prev pointers, as no more than one 
+	// thread at a time uses them; updates will get flushed when executing the 
+	//CAS below
+	next_n->prev = prev_n;
 
-	retry_release:
+	retry_release:;
 	old = GET_PACK(n);
 
 	assert(UNPACK_REACH(old) == BUSY);
