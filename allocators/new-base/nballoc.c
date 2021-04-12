@@ -118,11 +118,17 @@ static int insert_node(node *n) {
 	// n->reach was set as BUSY before n was visible in the list so it would be 
 	// impossible to remove it
 	
-	retry_prev:
+	retry_prev: // MAYBE: this doesn't need to be atomic
 	if (!bCAS(&(NEXT(n)->prev), target, n))
 		goto retry_prev;
 
-	n->reach = LIST;
+	retry_release:
+	old = GET_PACK(n);
+	new = MAKE_PACK_NODE(NEXT(n), UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
+
+	// MAYBE: could this be done in a lazier way? e.g. just n->reach = LIST
+	if (!set_pack_node(n, old, new))
+		goto retry_release;
 	// insertion is done, anyone can remove the node from the list now
 
 	return 1;
@@ -165,14 +171,18 @@ static int remove_node(node *n) {
 		goto retry_1;
 	}
 
-	retry_2:
+	retry_2: // MAYBE: this doesn't need to be atomic
 	if (!bCAS(&next->prev, n, prev))
 		goto retry_2;
 
-	assert(n->reach == BUSY);
+	retry_release:
+	old = GET_PACK(n);
+
+	assert(UNPACK_REACH(old) == BUSY);
 	
-	n->next = PACK_NEXT(NULLN);
-	n->reach = UNLINK;
+	new = MAKE_PACK_NODE(NULLN, UNPACK_ORDER(old), UNPACK_STATE(old), UNLINK);
+	if (!set_pack_node(n, old, new))
+		goto retry_release;
 	n->prev = NULLN;
 	
 	return 1;
@@ -298,8 +308,6 @@ static void setup_memory_blocks() {
 	}
 }
 
-void sigusr1_handler(int signal) { (void) signal; } // do nothing
-
 // Initialize the structure of the buddy system
 __attribute__ ((constructor)) void premain() {
 	// printf("initializing buddy system state:\n");
@@ -310,10 +318,6 @@ __attribute__ ((constructor)) void premain() {
 	// some CPU zones having slightly more memory compared to the others
 	nodes_per_cpu = (TOTAL_NODES / ALL_CPUS) >> MAX_ORDER << MAX_ORDER;
 	if (nodes_per_cpu == 0) abort(); // not enough memory has been assigned
-
-	if (signal(SIGUSR1, sigusr1_handler) == SIG_ERR) {
-		fprintf(stderr, "Couldn't set up a SIGUSR1 handler, shutting down\n");
-	}
 
 	// printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
 	// Allocate the memory for all necessary components
