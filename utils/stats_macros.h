@@ -1,7 +1,6 @@
 #ifndef DEBUG_MACROS
 
 	#include <stdio.h>
-	#include "nballoc.h"
 
 	typedef struct _frag_event {
 		unsigned long ev: 8; // a single char, '+' or '-'

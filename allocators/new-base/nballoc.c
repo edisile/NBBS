@@ -5,7 +5,6 @@
 #include <pthread.h>
 #include <assert.h>
 #include <string.h>
-#include <signal.h>
 
 #include "../../utils/utils.h"
 #include "gcc_wrappers.h"
