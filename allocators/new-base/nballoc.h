@@ -22,6 +22,10 @@
 		#define MAX_ALLOCABLE_BYTES (MIN_ALLOCABLE_BYTES << MAX_ORDER)
 	#endif
 
+	#if (MAX_ALLOCABLE_BYTES >> MAX_ORDER) != MIN_ALLOCABLE_BYTES
+		#error Definitions for MAX_ALLOCABLE_BYTES and MAX_ORDER conflict
+	#endif
+
 	#ifndef NUM_LEVELS
 		#define NUM_LEVELS 16ULL // 128MB
 	#endif

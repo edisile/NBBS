@@ -1,4 +1,6 @@
 #ifndef NEW_BUDDY_SYSTEM_FUNCS
+	
+	#define NEW_BUDDY_SYSTEM_FUNCS
 
 	#include "nballoc.h"
 	#include "structs.h"
