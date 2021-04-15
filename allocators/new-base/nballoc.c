@@ -12,6 +12,8 @@
 #include "nballoc.h"
 #include "structs.h"
 #include "declarations.h"
+#include "futex.h"
+#include "../../utils/stats_macros.h"
 
 #ifdef TSX
 	// Support for Intel TSX instructions
@@ -27,20 +29,11 @@ static node *nodes = NULL; // a list of all nodes, one for each page
 // FIXME: find a way to get rid of this vvv
 static lock *locks = NULL; // to emulate disabling preemption we take a lock on the cpu_zone
 static pthread_t *workers;
-static cond_var *cleanup_requested;
+static futex_t *cleanup_requested;
 
 #ifdef FAST_FREE
-static __thread float avg_order = 0; // per-thread average alloc order
-
-// The average is computed as a exponential moving average with weights (1/2, 1/2)
-static inline void update_avg(unsigned order) {
-	avg_order *= 0.5;
-	avg_order += 0.5 * order;
-}
-
-static inline int should_fast_free(unsigned order) {
-	return order >= avg_order;
-}
+extern void update_model(unsigned);
+extern int should_fast_free(unsigned);
 #endif
 
 #define INDEX(n_ptr) (n_ptr - nodes)
@@ -170,7 +163,7 @@ static int remove_node(node *n) {
 
 	// no need for atomics when updating prev pointers, as no more than one 
 	// thread at a time uses them; updates will get flushed when executing the 
-	//CAS below
+	// CAS below
 	next_n->prev = prev_n;
 
 	retry_release:;
@@ -317,14 +310,17 @@ __attribute__ ((constructor)) void premain() {
 	nodes_per_cpu = (TOTAL_NODES / ALL_CPUS) >> MAX_ORDER << MAX_ORDER;
 	if (nodes_per_cpu == 0) abort(); // not enough memory has been assigned
 
-	// printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
+	#ifndef NDEBUG
+	printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
+	printf("initial state has %lu %luB blocks\n", (TOTAL_MEMORY / MIN_ALLOCABLE_BYTES) >> MAX_ORDER, MAX_ALLOCABLE_BYTES);
+	#endif
 	// Allocate the memory for all necessary components
 	memory = aligned_alloc(PAGE_SIZE, TOTAL_MEMORY);
 	nodes = aligned_alloc(PAGE_SIZE, sizeof(node) * TOTAL_NODES);
 	zones = aligned_alloc(PAGE_SIZE, sizeof(cpu_zone) * ALL_CPUS);
 	locks = malloc(sizeof(lock) * ALL_CPUS);
 	workers = malloc(sizeof(pthread_t) * ALL_CPUS);
-	cleanup_requested = aligned_alloc(CACHE_LINE_SIZE, sizeof(cond_var) * ALL_CPUS);
+	cleanup_requested = aligned_alloc(CACHE_LINE_SIZE, sizeof(futex_t) * ALL_CPUS);
 	
 	// Cleanup if any allocation failed
 	if (memory == NULL || nodes == NULL || zones == NULL || locks == NULL || 
@@ -351,6 +347,7 @@ __attribute__ ((constructor)) void premain() {
 	// First initialize and connect all the heads in the cpu_zones
 	for (unsigned long i = 0; i < ALL_CPUS; i++) {
 		init_lock(&locks[i]);
+		init_futex(&cleanup_requested[i]);
 		pthread_create(&workers[i], NULL, cleanup_thread_job, (void *) i);
 
 		for (int j = 0; j <= MAX_ORDER; j++) {
@@ -634,6 +631,10 @@ static void split_node(node *n, size_t target_order) {
 	retry_set_order:;
 	assert(n->state == OCC && n->reach != STACK);
 
+	if (current_order == MAX_ORDER) {
+		FRAG_EVENT();
+	}
+
 	if (!change_order(n, current_order, target_order, OCC, n->reach))
 		goto retry_set_order;
 
@@ -714,7 +715,7 @@ static void *_alloc(size_t size) {
 
 	done:
 	#ifdef FAST_FREE
-	if (n != NULLN) update_avg(order);
+	if (n != NULLN) update_model(order);
 	#endif
 
 	return (void *) (memory + INDEX(n) * MIN_ALLOCABLE_BYTES);
@@ -781,6 +782,10 @@ static node *try_coalescing(node *n) {
 	retry2:;
 	if (!change_state(n, INV, FREE, UNLINK, order))
 		goto retry2;
+	
+	if (order == MAX_ORDER) {
+		DEFRAG_EVENT();
+	}
 
 	return n;
 }
@@ -928,20 +933,16 @@ static void _free(void *addr) {
 		// Since D = N - 2S - L and N >= S + L, D < 0 ==> there's at least 
 		// N/2 + 1 free nodes at the current level, so at least a pair of 
 		// buddies can be coalesced
-		// printf("D = %ld\n", head->D);
 
-		if (!cleanup_requested[owner]) {
-			bCAS(&cleanup_requested[owner], 0, 1); // best effort, if it fails it fails
-		}
+		// printf("D = %ld, delay = %lu\n", head->D, cleanup_requested[owner].delay);
+		futex_wake(&cleanup_requested[owner]);
 	}
 	#else
 	if (LEN(s) > STACK_THRESH) {
 		// wake up worker thread for the CPU that owns n if the stack has 
 		// reached its occupation threshold
 
-		if (!cleanup_requested[owner]) {
-			bCAS(&cleanup_requested[owner], 0, 1); // best effort, if it fails it fails
-		}
+		futex_wake(&cleanup_requested[owner]);
 	}
 	#endif
 }
@@ -958,7 +959,7 @@ void bd_xx_free(void *addr) {
 static void clean_cpu_zone(cpu_zone *z, lock *l) {
 	// iterate on all stacks and try to pop everything out of them to clean up
 
-	for (int order = 0; order <= MAX_ORDER; order++) {
+	for (int order = 0; order < MAX_ORDER; order++) {
 		#ifdef DELAY2
 		if (z->heads[order].D >= 0) {
 			// printf("D = %ld\n", z->heads[order].D);
@@ -966,6 +967,7 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 		}
 		#endif
 		
+		unsigned long pops = 0;
 		stack *s = &z->stacks[order];
 		if (LEN(s) == 0) continue;
 		
@@ -973,7 +975,7 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 			break; // there's someone already working on the list, try later
 
 		#ifdef DELAY2
-		#define CONTINUE_CONDITION (z->heads[order].D >= 0)
+		#define CONTINUE_CONDITION (z->heads[order].D < 0)
 		#else
 		#define CONTINUE_CONDITION (LEN(s) > 0)
 		#endif
@@ -987,6 +989,7 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 
 			if (n == NULLN) break;
 
+			pops++;
 			#ifdef DELAY2
 			// we took a node from the stack, update the value of D
 			// D = N - 2S - L, S -= 1 ==> D += 2
@@ -1005,7 +1008,13 @@ static void clean_cpu_zone(cpu_zone *z, lock *l) {
 			atomic_sub(&head->D, 1);
 			#endif
 		}
-		
+
+		// #ifdef DELAY2
+		// printf("Popped %lu nodes at order %u; stack len %lu, D %lu\n", pops, order, LEN(s), z->heads[order].D);
+		// #else
+		// printf("Popped %lu nodes at order %u; stack len %lu\n", pops, order, LEN(s));
+		// #endif
+
 		unlock_lock(l);
 	}
 }
@@ -1027,17 +1036,20 @@ static void *cleanup_thread_job(void *arg) {
 	lock *l = &locks[cpu];
 
 	for ( ; ; ) {
-		while (!cleanup_requested[cpu]) {
-			usleep(10000);
-			// FIXME: this is so unbelievably filthy, yet it's 2 orders of 
-			// magniture faster than using pthread_cond_wait/signal or 
-			// sleep+pthread_kill; there must be some better way to do this
-		}
+		long ok = futex_wait(&cleanup_requested[cpu]);
 
-		// printf("%lu woke up to work\n", cpu);
+		// while (cleanup_requested[cpu].var == 0) {
+		// 	usleep(5000);
+		// 	// FIXME: this is so unbelievably filthy, yet it's 2 orders of 
+		// 	// magniture faster than using pthread_cond_wait/signal or 
+		// 	// sleep+pthread_kill and even futex (without rate limiting); there 
+		// 	// must be some better way 
+		// 	// to do this
+		// }
+		
 		clean_cpu_zone(z, l);
 
-		cleanup_requested[cpu] = 0;
+		reset_futex(&cleanup_requested[cpu]);
 	}
 
 	return NULL;
@@ -1102,88 +1114,3 @@ void _debug_test_nodes() {
 
 	printf("Done!\n");
 }
-
-#ifdef TEST_MAIN
-int main(int argc, char const *argv[]) {
-	unsigned long expected_blocks = nodes_per_cpu >> MAX_ORDER;
-	printf("System has %lu CPUS; there's %lu pages per CPU, expecting %lu MAX_ORDER blocks per CPU\n", 
-		ALL_CPUS, nodes_per_cpu, expected_blocks);
-
-	// Check the structure of the list
-	for (int j = 0; j <= MAX_ORDER; j++) {
-		node *n = &zones[0].heads[j];
-		int i = 0;
-		int blocks = 0;
-
-		printf("Order %2d: ", j);
-		while (i <= ALL_CPUS) {
-			switch (n->state) {
-				case HEAD:
-					printf("|HEAD %d|-", i);
-					i++;
-					blocks = 0;
-					break;
-				case FREE:
-					blocks++;
-					printf("|o|-");
-					break;
-				default:
-					printf("\nsomething's wrong\n");
-					printf("\tnode: { status = %u, order = %u, cpu = %u}\n", n->state, n->order, OWNER(n));
-			}
-
-			n = NEXT(n);
-		}
-		printf("\n");
-	}
-
-	// Try some stack ops
-	do { // just to collapse the block in the editor
-		printf("\nTrying some stack operations\n");
-
-		node *n = NEXT(&zones[0].heads[MAX_ORDER]);
-		remove_node(n);
-
-		stack_push(&zones[0].stacks[MAX_ORDER], n);
-		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
-		
-		n = stack_pop(&zones[0].stacks[MAX_ORDER]);
-		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
-
-		stack_push(&zones[0].stacks[MAX_ORDER], n);
-		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
-		
-		n = stack_clear(&zones[0].stacks[MAX_ORDER]);
-		printf("n: %p, stack head: %p\n", n, zones[0].stacks[MAX_ORDER]);
-
-		n->state = OCC;
-		n->reach = UNLINK;
-		stack_push(&zones[0].stacks[MAX_ORDER], n);
-	} while (0);
-
-	// Try some allocations
-	do { // just to collapse the block in the editor
-		printf("\nTrying some allocations\n");
-		unsigned char *addr = bd_xx_malloc(100); // we expect a 1 page long area -> order 0
-		unsigned index = (addr - memory) / MIN_ALLOCABLE_BYTES;
-		node *n = &nodes[index];
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n, n->state, n->order, OWNER(n));
-
-		unsigned char *addr_2 = bd_xx_malloc(4096*12); // we expect a 16 page long area -> order 4
-		unsigned index_2 = (addr_2 - memory) / MIN_ALLOCABLE_BYTES;
-		node *n_2 = &nodes[index_2];
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->state, n_2->order, OWNER(n_2));
-
-		printf("\nLet's try to release\n");
-		bd_xx_free(addr_2);
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->state, n_2->order, OWNER(n_2));
-
-		bd_xx_free(addr);
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n, n->state, n->order, OWNER(n));
-		printf("\tnode: %p { status = %u, order = %u, cpu = %u}\n", n_2, n_2->state, n_2->order, OWNER(n_2));
-
-	} while (0);
-
-	return 0;
-}
-#endif
