@@ -347,7 +347,11 @@ __attribute__ ((constructor)) void premain() {
 	for (unsigned long i = 0; i < ALL_CPUS; i++) {
 		init_lock(&locks[i]);
 		init_futex(&cleanup_requested[i]);
+
+		#ifndef NWORKERS
+		// launch worker threads
 		pthread_create(&workers[i], NULL, cleanup_thread_job, (void *) i);
+		#endif
 
 		for (int j = 0; j <= MAX_ORDER; j++) {
 
@@ -693,7 +697,10 @@ static void *_alloc(size_t size) {
 		}
 	});
 	
-	if (TRANSACTION_OK(ret)) goto done;
+	if (TRANSACTION_OK(ret)) 
+		goto done;
+	else
+		printf("Transaction fail, reason: %lx\n", ABORT_CODE(ret));
 	#endif
 
 	assert(n->state == OCC);
@@ -841,7 +848,10 @@ static void _free(void *addr) {
 		insert_node(n);
 	});
 	
-	if (TRANSACTION_OK(ret)) return;
+	if (TRANSACTION_OK(ret))
+		return;
+	else
+		printf("Transaction fail, reason: %lx\n", ABORT_CODE(ret));
 	#endif
 	
 	if (try_lock(&locks[owner])) {
