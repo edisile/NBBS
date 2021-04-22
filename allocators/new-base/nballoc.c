@@ -14,11 +14,6 @@
 #include "futex.h"
 #include "../../utils/stats_macros.h"
 
-#ifdef TSX
-	// Support for Intel TSX instructions
-	#include "transaction.h"
-#endif
-
 // Some global variables, filled out by premain():
 static unsigned long ALL_CPUS; // number of (configured) CPUs on the system
 static unsigned long nodes_per_cpu;
@@ -47,13 +42,13 @@ static inline int try_lock(lock *l) {
 	if (l->var != 0)
 		return 0;
 	
-	return bCAS(&l->var, 0, 1);
+	return __sync_lock_test_and_set(&l->var, 1) == 0;
 }
 
 static inline void unlock_lock(lock *l) {
 	assert(l->var == 1);
-	// while (!bCAS(&l->var, 1, 0)); // it's not necessary to be atomic
-	l->var = 0; // lazy lock release
+	
+	__sync_lock_release(&l->var);
 }
 
 static inline void init_lock(lock *l) {
@@ -86,42 +81,25 @@ static int insert_node(node *n) {
 	}
 	
 	unsigned long new = MAKE_PACK_NODE(NEXT(target), UNPACK_ORDER(old), 
-			UNPACK_STATE(old), BUSY);
+			UNPACK_STATE(old), LIST);
 
 	if (!set_pack_node(n, old, new))
 		goto retry_acquire;
 	
+	// no need for atomics when updating prev pointers, as no more than one 
+	// thread at a time uses them
+	n->prev = target;
+	
 	retry_next:;
 	// now only the current thread can insert the node
-	n->prev = target;
 	
 	old = GET_PACK(target);
 	new = MAKE_PACK_NODE(n, UNPACK_ORDER(old), HEAD, LIST);
 	
-	if (!set_pack_node(target, old, new)) {
-		// since target is always a HEAD and its order, status and reachability 
-		// can't change there must have been some concurrent insert or remove; 
-		// update the next pointer of n
-		n->next = PACK_NEXT(NEXT(target));
+	if (!set_pack_node(target, old, new))
 		goto retry_next;
-	}
-
-	// can a node be removed at this point while it's being added? nope
-	// n->reach was set as BUSY before n was visible in the list so it would be 
-	// impossible to remove it
 	
-	// no need for atomics when updating prev pointers, as no more than one 
-	// thread at a time uses them; updates will get flushed when executing the 
-	//CAS below
-	NEXT(n)->prev = n;
-
-	retry_release:;
-	old = GET_PACK(n);
-	new = MAKE_PACK_NODE(NEXT(n), UNPACK_ORDER(old), UNPACK_STATE(old), LIST);
-
-	if (!set_pack_node(n, old, new))
-		goto retry_release;
-	// insertion is done, anyone can remove the node from the list now
+	NEXT(n)->prev = n; // again no need for atomics
 
 	return 1;
 }
@@ -143,13 +121,6 @@ static int remove_node(node *n) {
 	retry_next:;
 	node *prev_n = n->prev;
 	
-	// if (NEXT(prev) != n) {
-	// 	// there's been an insertion in front of n
-	// 	// MAYBE: add an assert, this should never happen while removing the node
-	// 	// unless it's done in a transaction (?)
-	// 	return;
-	// }
-
 	old = GET_PACK(prev_n);
 	assert(UNPACK_NEXT(old) == n);
 	assert(UNPACK_REACH(old) == LIST);
@@ -162,7 +133,7 @@ static int remove_node(node *n) {
 
 	// no need for atomics when updating prev pointers, as no more than one 
 	// thread at a time uses them; updates will get flushed when executing the 
-	// CAS below
+	// CAS below anyway
 	next_n->prev = prev_n;
 
 	retry_release:;
@@ -173,7 +144,7 @@ static int remove_node(node *n) {
 	new = MAKE_PACK_NODE(NULLN, UNPACK_ORDER(old), UNPACK_STATE(old), UNLINK);
 	if (!set_pack_node(n, old, new))
 		goto retry_release;
-	n->prev = NULLN;
+	n->prev = NULLN; // no need for atomics
 	
 	return 1;
 }
@@ -191,8 +162,6 @@ static int stack_push(stack *s, node *n) {
 	retry_acquire:;
 	unsigned long old = GET_PACK(n);
 	if (UNPACK_REACH(old) != UNLINK || UNPACK_STATE(old) != OCC) {
-		printf("Stack push failed:\n");
-		debug(old);
 		return 0;
 	}
 	
@@ -689,20 +658,6 @@ static void *_alloc(size_t size) {
 	// this thread some time
 	if (n->reach == UNLINK) goto done;
 
-	#ifdef TSX
-	int ret = TRY_TRANSACTION({
-		if (n->reach == LIST) {
-			// the node was taken from the list and is still there
-			remove_node(n);
-		}
-	});
-	
-	if (TRANSACTION_OK(ret)) 
-		goto done;
-	else
-		printf("Transaction fail, reason: %lx\n", ABORT_CODE(ret));
-	#endif
-
 	assert(n->state == OCC);
 
 	// fallback path, check if the node is owned by the current executing CPU; 
@@ -837,23 +792,6 @@ static void _free(void *addr) {
 	}
 	#endif
 
-	#ifdef TSX
-	int ret = TRY_TRANSACTION({
-		if (n->reach == LIST) {
-			// node might not have been removed before being freed
-			int ok = remove_node(n);
-		}
-		
-		n = try_coalescing(n);
-		insert_node(n);
-	});
-	
-	if (TRANSACTION_OK(ret))
-		return;
-	else
-		printf("Transaction fail, reason: %lx\n", ABORT_CODE(ret));
-	#endif
-	
 	if (try_lock(&locks[owner])) {
 		if (n->reach == LIST) {
 			// node might not have been removed before being freed

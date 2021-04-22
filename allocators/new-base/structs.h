@@ -20,8 +20,8 @@
 	// Possible ways a memory block could be reached
 	enum reachability {
 		UNLINK = 0, // node is detached from all other nodes
-		LIST, // node is in list
 		STACK, // node is in the stack
+		LIST, // node is in list
 		BUSY, // node is in the middle of an insertion in / removal from the list
 	};
 
