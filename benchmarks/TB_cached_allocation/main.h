@@ -18,6 +18,10 @@ void cached_allocation(ALLOC_GET_PAR(unsigned long long fixed_size, unsigned int
 	#else
 	unsigned long long obt, cmp = 0ULL;
 	#endif
+
+	unsigned long lfrees = 0;
+	unsigned long lfailures = 0;
+	unsigned long lallocs = 0;
 	
 	tentativi = CA_ITERATIONS; // / number_of_processes ;
 	i = 0;
@@ -25,12 +29,17 @@ void cached_allocation(ALLOC_GET_PAR(unsigned long long fixed_size, unsigned int
 	for(i=0;i<tentativi;i++){
 		obt = TO_BE_REPLACED_MALLOC(ALLOC_GET_PAR(fixed_size, fixed_order));
 		if (obt==cmp){
-			(*failures)++;
-			continue;
+				(lfailures)++;
+				continue;
 		}
 
-		(*allocs)++;
+		(lallocs)++;
 		TO_BE_REPLACED_FREE(FREE_GET_PAR(obt, fixed_order));
-		(*frees)++;
+		(lfrees)++;
 	}
+
+
+	*frees = lfrees;
+	*failures = lfailures;
+	*allocs = lallocs;
 }
