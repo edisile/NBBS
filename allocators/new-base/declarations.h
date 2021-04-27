@@ -39,9 +39,9 @@
 	// Convenience functions
 	// =========================================================================
 
-	static inline int change_state(node *, short, short, short, short);
+	static inline int change_state(node *, unsigned, unsigned, unsigned, unsigned);
 
-	static inline int change_order(node *, short, short, short, short);
+	static inline int change_order(node *, unsigned, unsigned, unsigned, unsigned);
 
 	static inline unsigned long cpu_id();
 

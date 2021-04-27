@@ -90,14 +90,14 @@ static int insert_node(node *n) {
 	// thread at a time uses them
 	n->prev = target;
 	
-	retry_next:;
+	retry_insert:;
 	// now only the current thread can insert the node
 	
 	old = GET_PACK(target);
 	new = MAKE_PACK_NODE(n, UNPACK_ORDER(old), HEAD, LIST);
 	
 	if (!set_pack_node(target, old, new))
-		goto retry_next;
+		goto retry_insert;
 	
 	NEXT(n)->prev = n; // again no need for atomics
 
@@ -113,7 +113,7 @@ static int remove_node(node *n) {
 		return 0; // someone else is removing or has removed the node
 	
 	unsigned long new = MAKE_PACK_NODE(UNPACK_NEXT(old), UNPACK_ORDER(old), 
-			UNPACK_STATE(old), BUSY);
+			UNPACK_STATE(old), MARK);
 
 	if (!set_pack_node(n, old, new))
 		goto retry_acquire;
@@ -139,7 +139,7 @@ static int remove_node(node *n) {
 	retry_release:;
 	old = GET_PACK(n);
 
-	assert(UNPACK_REACH(old) == BUSY);
+	assert(UNPACK_REACH(old) == MARK);
 	
 	new = MAKE_PACK_NODE(NULLN, UNPACK_ORDER(old), UNPACK_STATE(old), UNLINK);
 	if (!set_pack_node(n, old, new))
@@ -279,8 +279,8 @@ __attribute__ ((constructor)) void premain() {
 	if (nodes_per_cpu == 0) abort(); // not enough memory has been assigned
 
 	#ifndef NDEBUG
-	printf("buddy system manages %luB of memory\n", TOTAL_MEMORY);
-	printf("initial state has %lu %luB blocks\n", (TOTAL_MEMORY / MIN_ALLOCABLE_BYTES) >> MAX_ORDER, MAX_ALLOCABLE_BYTES);
+	printf("buddy system manages %lluB of memory\n", TOTAL_MEMORY);
+	printf("initial state has %llu %luB blocks\n", TOTAL_MEMORY / MAX_ALLOCABLE_BYTES, MAX_ALLOCABLE_BYTES);
 	#endif
 	// Allocate the memory for all necessary components
 	memory = aligned_alloc(PAGE_SIZE, TOTAL_MEMORY);
@@ -322,7 +322,7 @@ __attribute__ ((constructor)) void premain() {
 		pthread_create(&workers[i], NULL, cleanup_thread_job, (void *) i);
 		#endif
 
-		for (int j = 0; j <= MAX_ORDER; j++) {
+		for (unsigned j = 0; j <= MAX_ORDER; j++) {
 
 			zones[i].heads[j] = (node) {
 				.next = PACK_NEXT(&zones[(i + 1) % ALL_CPUS].heads[j]),
@@ -354,8 +354,8 @@ __attribute__ ((constructor)) void premain() {
 // Convenience functions
 // =============================================================================
 
-static inline int change_state(node *n, short old_state, short new_state, 
-		short exp_reach, short exp_order) {
+static inline int change_state(node *n, unsigned old_state, unsigned new_state, 
+		unsigned exp_reach, unsigned exp_order) {
 	unsigned long old = GET_PACK(n);
 
 	if (UNPACK_STATE(old) != old_state || UNPACK_REACH(old) != exp_reach || 
@@ -369,8 +369,8 @@ static inline int change_state(node *n, short old_state, short new_state,
 	return set_pack_node(n, old, new);
 }
 
-static inline int change_order(node *n, short old_order, short new_order, 
-		short exp_state, short exp_reach) {
+static inline int change_order(node *n, unsigned old_order, unsigned new_order, 
+		unsigned exp_state, unsigned exp_reach) {
 	
 	assert(exp_reach != STACK && exp_state != HEAD);
 
@@ -479,9 +479,9 @@ static inline int handle_occ_node(node *n, node **next_node_ptr) {
 		unlock_lock(&locks[owner]);
 	}
 
-	// check if remove_node failed because of a concurrent free; in this case 
+	// check if remove_node failed or there's been a concurrent free; in this case 
 	// the current thread should check this node again
-	if (!ok && n->state == FREE)
+	if (!ok || n->state == FREE)
 		*next_node_ptr = n;
 	else
 		*next_node_ptr = next;
@@ -642,6 +642,8 @@ static void split_node(node *n, size_t target_order) {
 static void *_alloc(size_t size) {
 	size_t order = closest_order(size);
 
+	if (order > MAX_ORDER) return NULL;
+
 	node *n = get_free_node_fast(order);
 
 	if (n == NULLN)
@@ -660,8 +662,8 @@ static void *_alloc(size_t size) {
 
 	assert(n->state == OCC);
 
-	// fallback path, check if the node is owned by the current executing CPU; 
-	// if it is disable preemption and remove it
+	// check if the node is owned by the current executing CPU; 
+	// if it is disable preemption (a.k.a. take the lock) and remove it
 	unsigned owner = n->owner;
 	if (try_lock(&locks[owner])) {
 		if (n->reach == LIST) {
@@ -695,7 +697,7 @@ void* bd_xx_malloc(size_t size) {
 
 static node *try_coalescing(node *n) {
 	retry1:;
-	short order = n->order;
+	unsigned order = n->order;
 
 	node *buddy = &nodes[BUDDY_INDEX(INDEX(n), order)];
 	// fast path: if the buddy is not free or wrong order just mark n as free
@@ -846,7 +848,7 @@ static void _free(void *addr) {
 
 					break;
 				
-				case BUSY:
+				case MARK:
 					// another thread that's looking for a free node is 
 					// currently cleaning and removing the node from the list; 
 					// try to change the state to FREE while the removal is 
@@ -854,7 +856,7 @@ static void _free(void *addr) {
 					// 1. if this operation is successful the other thread will 
 					// handle n after its removal
 					// 2. if the operation fails this thread will check again
-					ok = change_state(n, OCC, FREE, BUSY, n->order);
+					ok = change_state(n, OCC, FREE, MARK, n->order);
 					
 					#ifdef DELAY2
 					if (ok) {
@@ -906,7 +908,7 @@ void bd_xx_free(void *addr) {
 static void clean_cpu_zone(cpu_zone *z, lock *l) {
 	// iterate on all stacks and try to pop everything out of them to clean up
 
-	for (int order = 0; order < MAX_ORDER; order++) {
+	for (unsigned order = 0; order < MAX_ORDER; order++) {
 		#ifdef DELAY2
 		if (z->heads[order].D >= 0) {
 			// printf("D = %ld\n", z->heads[order].D);
@@ -983,7 +985,7 @@ static void *cleanup_thread_job(void *arg) {
 	lock *l = &locks[cpu];
 
 	for ( ; ; ) {
-		long ok = futex_wait(&cleanup_requested[cpu]);
+		futex_wait(&cleanup_requested[cpu]);
 
 		// while (cleanup_requested[cpu].var == 0) {
 		// 	usleep(5000);

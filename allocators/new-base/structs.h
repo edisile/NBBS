@@ -22,7 +22,7 @@
 		UNLINK = 0, // node is detached from all other nodes
 		STACK, // node is in the stack
 		LIST, // node is in list
-		BUSY, // node is in the middle of an insertion in / removal from the list
+		MARK, // node is in the middle of an insertion in / removal from the list
 	};
 
 	// Structure of a node, alignment to CACHE_LINE_SIZE (64B) means that the 
@@ -35,7 +35,7 @@
 			unsigned long :      5; // padding
 			unsigned long order: 4; // 0 up to MAX_ORDER included, 0 <= order <= 15
 			unsigned long state: 2; // FREE, INV, OCC, HEAD
-			unsigned long reach: 2; // UNLINK, LIST, STACK, BUSY
+			unsigned long reach: 2; // UNLINK, LIST, STACK, MARK
 		} __attribute__ ((__packed__));
 
 		volatile union { // what field is read depends on the value of .reach
