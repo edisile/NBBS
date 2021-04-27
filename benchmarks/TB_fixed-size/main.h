@@ -35,6 +35,11 @@ void fixedsize(ALLOC_GET_PAR(unsigned long long fixed_size, unsigned int fixed_o
 	unsigned int max_order = fixed_order + (CO_LEVELS-1);
 	unsigned int scelta;
 #endif
+
+	unsigned long lfrees = 0;
+	unsigned long lfailures = 0;
+	unsigned long lallocs = 0;
+
 	struct my_drand48_data randBuffer;
     my_srand48_r(17*myid, &randBuffer);
 	
@@ -59,12 +64,17 @@ void fixedsize(ALLOC_GET_PAR(unsigned long long fixed_size, unsigned int fixed_o
 		TO_BE_REPLACED_FREE(FREE_GET_PAR(chunks[j], sizes[j]));
 		chunks[j] = TO_BE_REPLACED_MALLOC(sizes[j]);
 		if (chunks[j] == cmp){
-			(*failures)++;
+			lfailures++;
 			continue;
 		}
-		(*allocs)++;
-		(*frees)++;
-	}	
+		lallocs++;
+		lfrees++;
+	}
+
+	*frees = lfrees;
+	*failures = lfailures;
+	*allocs = lallocs;
+
 #if KERNEL_BD == 0
 	free(chunks);
 	free(sizes);

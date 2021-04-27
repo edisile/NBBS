@@ -29,13 +29,13 @@ void cached_allocation(ALLOC_GET_PAR(unsigned long long fixed_size, unsigned int
 	for(i=0;i<tentativi;i++){
 		obt = TO_BE_REPLACED_MALLOC(ALLOC_GET_PAR(fixed_size, fixed_order));
 		if (obt==cmp){
-				(lfailures)++;
+				lfailures++;
 				continue;
 		}
 
-		(lallocs)++;
+		lallocs++;
 		TO_BE_REPLACED_FREE(FREE_GET_PAR(obt, fixed_order));
-		(lfrees)++;
+		lfrees++;
 	}
 
 
