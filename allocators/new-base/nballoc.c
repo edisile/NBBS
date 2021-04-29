@@ -1032,11 +1032,11 @@ void _debug_test_nodes() {
 		switch (n->state) {
 			case FREE:
 				free_count++;
-				free_mem += PAGE_SIZE << n->order;
+				free_mem += MIN_ALLOCABLE_BYTES << n->order;
 				break;
 			case OCC:
 				occ_count++;
-				occ_mem += PAGE_SIZE << n->order;
+				occ_mem += MIN_ALLOCABLE_BYTES << n->order;
 				break;
 			case INV:
 				inv_count++;
