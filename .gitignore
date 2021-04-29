@@ -36,3 +36,5 @@ results_*_*_*/
 .vscode/
 kernel-bd-api/Module.symvers
 *.svg
+__pycache__/
+*.csv
