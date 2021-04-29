@@ -53,7 +53,6 @@ for test in tests:
                     #file_list.append(f"{test}-{alloc}-sz{size}-TH{th}-R{run}")
                     file_list.append((test, alloc, size, th, run))
 
-errors = False
 for idx, filetup in enumerate(file_list, start = 1):
     print(f"\rProgress: {idx}/{len(file_list)}", end="")
 
@@ -70,21 +69,13 @@ for idx, filetup in enumerate(file_list, start = 1):
         with open(f"{directory}/{filename}", "r") as f:
             s = f.read()
             match = parser.findall(s)
-            if len(match) > 0:
-                timer = match[0].split(" ")[-1] # get only the timer
-                data["Time"].append(timer)
-            else:
-                print(f"\nFile has no timer: {filename}")
-                data["Time"].append("NaN")
+            timer = match[0].split(" ")[-1] # get only the timer
+            data["Time"].append(timer)
     except:
-        print(f"\nFile not found: {filename}")
-        errors = True
+        data["Time"].append("NaN")
         pass
 
-if not errors:
-    print("\nParsing completed successfully")
+print(f"\nParsing completed, output to {output}")
 
-    df = pd.DataFrame(data, columns = columns)
-    df.to_csv(output, index=False)
-else:
-    print("\nParsing encountered errors, no output file generated")
+df = pd.DataFrame(data, columns = columns)
+df.to_csv(output, index=False)
