@@ -70,14 +70,12 @@ for idx, filetup in enumerate(file_list, start = 1):
         with open(f"{directory}/{filename}", "r") as f:
             s = f.read()
             match = parser.findall(s)
-            if match is not None:
+            if len(match) > 0:
                 timer = match[0].split(" ")[-1] # get only the timer
                 data["Time"].append(timer)
             else:
                 print(f"\nFile has no timer: {filename}")
                 data["Time"].append("NaN")
-                errors = True
-            
     except:
         print(f"\nFile not found: {filename}")
         errors = True
