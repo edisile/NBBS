@@ -7,6 +7,7 @@ mkdir -p dat/TBLS
 mkdir -p dat/TBTT
 mkdir -p dat/TBFS
 mkdir -p dat/TBCA
+mkdir -p dat/TBBM
 
 
 default=$((30*1900000000))

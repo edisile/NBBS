@@ -38,3 +38,5 @@ kernel-bd-api/Module.symvers
 *.svg
 __pycache__/
 *.csv
+*.pgf
+a.out
