@@ -53,6 +53,7 @@ MODULE_AUTHOR("Romolo Marotta <marotta@diag.uniroma1.it>");
 #include "../benchmarks/TB_threadtest/main.h"
 #include "../benchmarks/TB_fixed-size/main.h"
 #include "../benchmarks/TB_cached_allocation/main.h"
+#include "../benchmarks/TB_bimodal/main.h"
 
 #define NUM_BENCHMARKS 5
 
@@ -172,6 +173,29 @@ bad_size:
 	return -1;
 }
 
+__SYSCALL_DEFINEx(5, _bimodal, int, order, int, max_order, unsigned long*, all, unsigned long*, fai, unsigned long*, fre)
+{
+	unsigned long long allocs = 0, failures = 0, frees = 0;
+	AUDIT{
+		printk("%s: sys_allocate has been called with param  %d\n",MODNAME,order);
+	}
+
+	if(order > MAX_BD_ORDER || max_order > MAX_BD_ORDER) goto bad_size;
+
+	
+	bimodal(order, max_order, &allocs, &failures, &frees);
+	printk("%s: allocation address is %llu %llu %llu\n",MODNAME, allocs, failures, frees);
+	
+	__put_user(allocs,all);
+	__put_user(failures,fai);
+	__put_user(frees,fre);
+
+	return 0;
+
+bad_size:
+
+	return -1;
+}
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
@@ -179,11 +203,13 @@ static unsigned long sys_linuxscalability_ptr = (unsigned long) __x64_sys_linuxs
 static unsigned long sys_threadtest_ptr       = (unsigned long) __x64_sys_threadtest;
 static unsigned long sys_costantoccupancy_ptr = (unsigned long) __x64_sys_costantoccupancy;
 static unsigned long sys_cachedallocation_ptr = (unsigned long) __x64_sys_cachedallocation;
+static unsigned long sys_bimodal_ptr = (unsigned long) __x64_sys_bimodal;
 #else
 static unsigned long sys_linuxscalability_ptr = (unsigned long) sys_linuxscalability;
 static unsigned long sys_threadtest_ptr       = (unsigned long) sys_threadtest;
 static unsigned long sys_costantoccupancy_ptr = (unsigned long) sys_costantoccupancy;
 static unsigned long sys_cachedallocation_ptr = (unsigned long) sys_cachedallocation;
+static unsigned long sys_bimodal_ptr = (unsigned long) sys_bimodal;
 #endif
 
 
@@ -216,6 +242,7 @@ int init_module(void) {
 	p[restore[1]] = (unsigned long)sys_threadtest_ptr;
 	p[restore[2]] = (unsigned long)sys_costantoccupancy_ptr;
 	p[restore[3]] = (unsigned long)sys_cachedallocation_ptr;
+	p[restore[4]] = (unsigned long)sys_bimodal_ptr;
 	_write_cr0(cr0);
 	
 	
@@ -223,6 +250,7 @@ int init_module(void) {
 	printk("%s: sys_threadtest_ptr       installed on sys-call table entry %d\n",MODNAME,restore[1]);
 	printk("%s: sys_costantoccupancy_ptr installed on sys-call table entry %d\n",MODNAME,restore[2]);
 	printk("%s: sys_chacedallocation_ptr installed on sys-call table entry %d\n",MODNAME,restore[3]);
+	printk("%s: sys_bimodal_ptr installed on sys-call table entry %d\n",MODNAME,restore[4]);
 
 	ret = 0;
 
@@ -243,6 +271,7 @@ void cleanup_module(void) {
 	p[restore[1]] = _ni_syscall;
 	p[restore[2]] = _ni_syscall;
 	p[restore[3]] = _ni_syscall;
+	p[restore[4]] = _ni_syscall;
 	_write_cr0(cr0);
 	
 	printk("%s: sys-call table restored to its original content\n",MODNAME);

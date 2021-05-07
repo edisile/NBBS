@@ -5,5 +5,6 @@
 #define NR_THREADTEST			156
 #define NR_COSTANT_OCCUPANCY	174
 #define NR_CACHED_ALLOCATION	177
+#define NR_BIMODAL				178 /* TODO: is this ok? */
 
 #endif
