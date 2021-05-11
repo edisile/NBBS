@@ -88,7 +88,7 @@ __SYSCALL_DEFINEx(4, _linuxscalability, int, order, unsigned long*, all, unsigne
 
 	
 	linux_scalability(order, &allocs, &failures, &frees);
-	printk("%s: allocation address is %llu %llu %llu\n",MODNAME, allocs, failures, frees);
+	printk("%s: allocated %llu, failed %llu, freed %llu\n",MODNAME, allocs, failures, frees);
 	
 	__put_user(allocs,all);
 	__put_user(failures,fai);
@@ -112,7 +112,7 @@ __SYSCALL_DEFINEx(5, _threadtest, int, order, unsigned int, number_of_processes,
 
 	
 	threadtest(order, number_of_processes, &allocs, &failures, &frees);
-	printk("%s: allocation address is %llu %llu %llu\n",MODNAME, allocs, failures, frees);
+	printk("%s: allocated %llu, failed %llu, freed %llu\n",MODNAME, allocs, failures, frees);
 	
 	__put_user(allocs,all);
 	__put_user(failures,fai);
@@ -136,7 +136,7 @@ __SYSCALL_DEFINEx(5, _costantoccupancy, int, order, unsigned int, number_of_proc
 
 	
 	fixedsize(order, number_of_processes, &allocs, &failures, &frees);
-	printk("%s: allocation address is %llu %llu %llu\n",MODNAME, allocs, failures, frees);
+	printk("%s: allocated %llu, failed %llu, freed %llu\n",MODNAME, allocs, failures, frees);
 	
 	__put_user(allocs,all);
 	__put_user(failures,fai);
@@ -160,7 +160,7 @@ __SYSCALL_DEFINEx(4, _cachedallocation, int, order, unsigned long*, all, unsigne
 
 	
 	cached_allocation(order, &allocs, &failures, &frees);
-	printk("%s: allocation address is %llu %llu %llu\n",MODNAME, allocs, failures, frees);
+	printk("%s: allocated %llu, failed %llu, freed %llu\n",MODNAME, allocs, failures, frees);
 	
 	__put_user(allocs,all);
 	__put_user(failures,fai);
@@ -184,7 +184,7 @@ __SYSCALL_DEFINEx(5, _bimodal, int, order, int, max_order, unsigned long*, all, 
 
 	
 	bimodal(order, max_order, &allocs, &failures, &frees);
-	printk("%s: allocation address is %llu %llu %llu\n",MODNAME, allocs, failures, frees);
+	printk("%s: allocated %llu, failed %llu, freed %llu\n",MODNAME, allocs, failures, frees);
 	
 	__put_user(allocs,all);
 	__put_user(failures,fai);

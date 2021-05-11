@@ -1,11 +1,9 @@
 #if KERNEL_BD == 0
 #define ALLOC_GET_PAR(x,y) x
 #define  FREE_GET_PAR(x,y) x
-#define BASE 4096
 #else
 #define ALLOC_GET_PAR(x,y) y
 #define  FREE_GET_PAR(x,y) x,y
-#define BASE 1
 #endif
 
 
@@ -51,7 +49,7 @@ void bimodal(ALLOC_GET_PAR(unsigned long long fixed_size, unsigned int fixed_ord
 		
 		for(i=0;i<tentativi;i++){
 			if(addrs[i] != cmp){
-				TO_BE_REPLACED_FREE(FREE_GET_PAR(addrs[i], fixed_order));
+				TO_BE_REPLACED_FREE(FREE_GET_PAR(addrs[i], (i % 16 == 0 ? max_order : fixed_order)));
 				lfrees++;
 			}
 		}
