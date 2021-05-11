@@ -8,6 +8,10 @@
 #define BASE 1
 #endif
 
+#ifndef MAX
+#define MAX(x,y) (x > y ? x : y)
+#endif
+
 void* bd_xx_malloc(size_t);
 void  bd_xx_free(FREE_GET_PAR(void*,size_t));
 
@@ -20,13 +24,13 @@ void threadtest(ALLOC_GET_PAR(unsigned long long fixed_size, unsigned int fixed_
 #if KERNEL_BD == 0
 	void *obt, *cmp = NULL;
 	void **addrs = malloc(sizeof(void*)*tentativi);
-	tentativi /= fixed_size/BASE; // BUG: divide by zero if fixed_size < BASE
-	iterations *= fixed_size/BASE;
+	tentativi /= MAX(BASE, fixed_size)/BASE;
+	iterations *= MAX(BASE, fixed_size)/BASE;
 #else
 	unsigned long long cmp = 0ULL;
 	unsigned long long *addrs = vmalloc(sizeof(void*)*tentativi);
-	tentativi /= BASE >> fixed_order; // BUG: divide by zero if fixed_order > 0
-	iterations *= BASE >> fixed_order;
+	tentativi /= BASE << fixed_order;
+	iterations *= BASE << fixed_order;
 #endif
 
 	unsigned long lfrees = 0;
