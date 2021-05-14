@@ -27,6 +27,14 @@ $(TARGET)-new-%: $(SRCS) #$(BASE_ALLOCATORS)/$(TARGET)-%-nb/nballoc.o
 	@echo compiling for $@
 	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/new-$*) -L$(abspath ../../allocators/new-$*) -lnew-$*  -o $(TARGET)-new-$* -DALLOCATOR=new-$* -D'TO_BE_REPLACED_MALLOC(x)=bd_xx_malloc(x)' -D'TO_BE_REPLACED_FREE(x)=bd_xx_free(x)' -lpthread -D'ALLOCATOR_NAME="new-$*"'
 
+$(TARGET)-cmalloc: $(SRCS)
+	@echo compiling for $@
+	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/cmalloc) -L$(abspath ../../allocators/cmalloc) -lcmalloc  -o $(TARGET)-cmalloc -DALLOCATOR=cmalloc -D'TO_BE_REPLACED_MALLOC(x)=bd_xx_malloc(x)' -D'TO_BE_REPLACED_FREE(x)=bd_xx_free(x)' -lpthread -ldl -D'ALLOCATOR_NAME="cmalloc"'
+
+$(TARGET)-dsa-wf: $(SRCS)
+	@echo compiling for $@
+	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/dsa-wf) -L$(abspath ../../allocators/dsa-wf) -ldsa-wf  -o $(TARGET)-dsa-wf -DALLOCATOR=dsa-wf -D'TO_BE_REPLACED_MALLOC(x)=bd_xx_malloc(x)' -D'TO_BE_REPLACED_FREE(x)=bd_xx_free(x)' -lpthread -D'ALLOCATOR_NAME="dsa-wf"'
+
 $(TARGET)-kernel-sl:  $(SRCS)
 	@echo compiling for $@
 	$(CC) $(FLAGS) main.c  -I../../utils -o $(TARGET)-kernel-sl -DALLOCATOR=kernel-sl  -lnuma -lpthread -D'ALLOCATOR_NAME="kernel-sl"' -D'KERNEL_BD=1'

@@ -19,6 +19,8 @@ larson*-sl
 TB_*-nb
 TB_*-new*
 TB_*-sl
+TB_*-cmalloc
+TB_*-dsa-wf
 *-ptmalloc3
 *-hoard
 results/
