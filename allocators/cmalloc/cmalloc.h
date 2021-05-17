@@ -11,8 +11,8 @@
 #include "defines.h"
 #include "log.h"
 
-#define c_malloc bd_xx_malloc
-#define c_free bd_xx_free
+#define c_malloc malloc
+#define c_free free
 #define c_calloc calloc
 #define c_realloc realloc
 #define c_malloc_usable_size malloc_usable_size

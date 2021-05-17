@@ -29,7 +29,7 @@ $(TARGET)-new-%: $(SRCS) #$(BASE_ALLOCATORS)/$(TARGET)-%-nb/nballoc.o
 
 $(TARGET)-cmalloc: $(SRCS)
 	@echo compiling for $@
-	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/cmalloc) -L$(abspath ../../allocators/cmalloc) -lcmalloc  -o $(TARGET)-cmalloc -DALLOCATOR=cmalloc -D'TO_BE_REPLACED_MALLOC(x)=bd_xx_malloc(x)' -D'TO_BE_REPLACED_FREE(x)=bd_xx_free(x)' -lpthread -ldl -D'ALLOCATOR_NAME="cmalloc"'
+	$(CC) $(FLAGS) main.c  -I../../utils  -I$(abspath ../../allocators/cmalloc) -L$(abspath ../../allocators/cmalloc) -lcmalloc  -o $(TARGET)-cmalloc -DALLOCATOR=cmalloc -D'TO_BE_REPLACED_MALLOC(x)=malloc(x)' -D'TO_BE_REPLACED_FREE(x)=free(x)' -lpthread -ldl -D'ALLOCATOR_NAME="cmalloc"'
 
 $(TARGET)-dsa-wf: $(SRCS)
 	@echo compiling for $@
