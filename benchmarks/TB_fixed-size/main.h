@@ -71,6 +71,10 @@ void fixedsize(ALLOC_GET_PAR(unsigned long long fixed_size, unsigned int fixed_o
 		lfrees++;
 	}
 
+	for (j = 0; j < blocchi; j++) {
+		TO_BE_REPLACED_FREE(FREE_GET_PAR(chunks[j], sizes[j]));
+	}
+
 	*frees = lfrees;
 	*failures = lfailures;
 	*allocs = lallocs;
